@@ -184,6 +184,24 @@ defmodule SymphonyElixir.Config do
   end
 
   @spec linear_endpoint() :: String.t()
+  @spec jira_endpoint() :: String.t() | nil
+  def jira_endpoint do
+    get_in(validated_workflow_options(), [:tracker, :endpoint])
+  end
+
+  @spec jira_api_token() :: String.t() | nil
+  def jira_api_token do
+    validated_workflow_options()
+    |> get_in([:tracker, :api_key])
+    |> resolve_env_value(System.get_env("JIRA_API_TOKEN"))
+    |> normalize_secret_value()
+  end
+
+  @spec jira_project_slug() :: String.t() | nil
+  def jira_project_slug do
+    get_in(validated_workflow_options(), [:tracker, :project_slug])
+  end
+
   def linear_endpoint do
     get_in(validated_workflow_options(), [:tracker, :endpoint])
   end
@@ -367,6 +385,8 @@ defmodule SymphonyElixir.Config do
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
          :ok <- require_linear_project(),
+         :ok <- require_jira_token(),
+         :ok <- require_jira_project(),
          :ok <- require_valid_codex_runtime_settings() do
       require_codex_command()
     end
@@ -390,6 +410,8 @@ defmodule SymphonyElixir.Config do
     case tracker_kind() do
       "linear" -> :ok
       "memory" -> :ok
+      "jira" -> :ok
+      "jira" -> :ok
       nil -> {:error, :missing_tracker_kind}
       other -> {:error, {:unsupported_tracker_kind, other}}
     end
@@ -402,6 +424,34 @@ defmodule SymphonyElixir.Config do
           :ok
         else
           {:error, :missing_linear_api_token}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp require_jira_token do
+    case tracker_kind() do
+      "jira" ->
+        if is_binary(jira_api_token()) do
+          :ok
+        else
+          {:error, :missing_jira_api_token}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp require_jira_project do
+    case tracker_kind() do
+      "jira" ->
+        if is_binary(jira_project_slug()) do
+          :ok
+        else
+          {:error, :missing_jira_project_slug}
         end
 
       _ ->
