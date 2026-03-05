@@ -6,7 +6,13 @@ defmodule SymphonyElixir.CLI do
   alias SymphonyElixir.LogFile
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
-  @switches [{@acknowledgement_switch, :boolean}, logs_root: :string, port: :integer]
+  @switches [
+    {@acknowledgement_switch, :boolean},
+    logs_root: :string,
+    port: :integer,
+    run_agent: :string,
+    orchestrator_url: :string
+  ]
 
   @type ensure_started_result :: {:ok, [atom()]} | {:error, term()}
   @type deps :: %{
@@ -36,19 +42,73 @@ defmodule SymphonyElixir.CLI do
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
-          run(Path.expand("WORKFLOW.md"), deps)
+          run_mode(Path.expand("WORKFLOW.md"), opts, deps)
         end
 
       {opts, [workflow_path], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
              :ok <- maybe_set_logs_root(opts, deps),
              :ok <- maybe_set_server_port(opts, deps) do
-          run(workflow_path, deps)
+          run_mode(workflow_path, opts, deps)
         end
 
       _ ->
         {:error, usage_message()}
     end
+  end
+
+  @spec run_mode(String.t(), keyword(), deps()) :: :ok | {:error, String.t()}
+  defp run_mode(workflow_path, opts, deps) do
+    case Keyword.get(opts, :run_agent) do
+      nil ->
+        run(workflow_path, deps)
+
+      issue_id ->
+        orchestrator_url = Keyword.get(opts, :orchestrator_url)
+        run_worker(workflow_path, issue_id, orchestrator_url, deps)
+    end
+  end
+
+  @spec run_worker(String.t(), String.t(), String.t() | nil, deps()) :: :ok | {:error, String.t()}
+  def run_worker(workflow_path, issue_id, orchestrator_url, deps) do
+    expanded_path = Path.expand(workflow_path)
+
+    if deps.file_regular?.(expanded_path) do
+      :ok = deps.set_workflow_file_path.(expanded_path)
+
+      # Ensure base dependencies are started without starting the full app tree
+      # which includes the orchestrator polling loop.
+      Application.ensure_all_started(:logger)
+      Application.ensure_all_started(:req)
+      Application.ensure_all_started(:yaml_elixir)
+      Application.ensure_all_started(:jason)
+
+      SymphonyElixir.Config.validate!()
+
+      run_worker_with_issue(issue_id, orchestrator_url)
+    else
+      {:error, "Workflow file not found: #{expanded_path}"}
+    end
+  end
+
+  defp run_worker_with_issue(issue_id, orchestrator_url) do
+    # An issue that is dispatched might no longer be in the candidate list,
+    # so we need to fetch it by ID directly.
+    case SymphonyElixir.Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [issue | _]} -> start_worker(issue, orchestrator_url)
+      {:ok, []} -> {:error, "Issue #{issue_id} not found."}
+      {:error, reason} -> {:error, "Failed to fetch issue #{issue_id}: #{inspect(reason)}"}
+    end
+  end
+
+  defp start_worker(issue, orchestrator_url) do
+    if orchestrator_url do
+      Application.put_env(:symphony_elixir, :orchestrator_url, orchestrator_url)
+    end
+
+    Task.Supervisor.start_link(name: SymphonyElixir.TaskSupervisor)
+    SymphonyElixir.AgentRunner.run(issue, nil)
+    :ok
   end
 
   @spec run(String.t(), deps()) :: :ok | {:error, String.t()}
@@ -72,7 +132,7 @@ defmodule SymphonyElixir.CLI do
 
   @spec usage_message() :: String.t()
   defp usage_message do
-    "Usage: symphony [--logs-root <path>] [--port <port>] [path-to-WORKFLOW.md]"
+    "Usage: symphony [--run-agent <issue_id> --orchestrator-url <url>] [path-to-WORKFLOW.md]"
   end
 
   @spec runtime_deps() :: deps()

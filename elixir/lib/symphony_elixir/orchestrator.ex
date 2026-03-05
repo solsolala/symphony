@@ -132,9 +132,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info(
-        {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
+        {:codex_worker_update, issue_id, %{event: _} = update},
         %{running: running} = state
       ) do
+    # When update comes from web API, timestamp might be string or missing
+    update = Map.put_new(update, :timestamp, DateTime.utc_now())
+
     case Map.get(running, issue_id) do
       nil ->
         {:noreply, state}
@@ -595,20 +598,101 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp k8s_spawn_pod(issue, attempt) do
+    # Only spawn real pods if running inside a cluster
+    # Alternatively, you can toggle this based on an env var
+    namespace = System.get_env("POD_NAMESPACE", "default")
+    orchestrator_host = System.get_env("POD_IP") || "symphony"
+    orchestrator_port = Application.get_env(:symphony_elixir, :server_port_override, 4000)
+    orchestrator_url = "http://#{orchestrator_host}:#{orchestrator_port}"
+
+    safe_id = String.replace(issue.identifier || issue.id, ~r/[^a-z0-9-]/i, "-") |> String.downcase()
+    pod_name = "symphony-worker-#{safe_id}-#{:os.system_time(:millisecond)}"
+
+    # Normally we would fetch the image dynamically from env. Let's use a sensible default.
+    image = System.get_env("WORKER_IMAGE", "symphony:latest")
+
+    pod_manifest = %{
+      "apiVersion" => "v1",
+      "kind" => "Pod",
+      "metadata" => %{
+        "name" => pod_name,
+        "labels" => %{
+          "app" => "symphony-worker",
+          "issue_id" => issue.id
+        }
+      },
+      "spec" => %{
+        "restartPolicy" => "Never",
+        "containers" => [
+          %{
+            "name" => "worker",
+            "image" => image,
+            "command" => ["symphony", "--run-agent", issue.id, "--orchestrator-url", orchestrator_url],
+            "env" => [
+              %{"name" => "LINEAR_API_KEY", "value" => System.get_env("LINEAR_API_KEY", "")},
+              %{"name" => "WORKSPACE_ROOT", "value" => System.get_env("WORKSPACE_ROOT", "/app/workspaces")}
+            ]
+          }
+        ]
+      }
+    }
+
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    if File.exists?(token_path) do
+      token = File.read!(token_path)
+
+      req =
+        Req.new(
+          base_url: "https://kubernetes.default.svc",
+          url: "/api/v1/namespaces/#{namespace}/pods",
+          method: :post,
+          json: pod_manifest,
+          auth: {:bearer, token},
+          connect_options: [cacertfile: ca_path]
+        )
+
+      case Req.request(req) do
+        {:ok, %Req.Response{status: status}} when status in 200..299 ->
+          {:ok, pod_name}
+
+        {:ok, %Req.Response{status: status, body: body}} ->
+          {:error, "K8s API returned status #{status}: #{inspect(body)}"}
+
+        {:error, reason} ->
+          {:error, "K8s API request failed: #{inspect(reason)}"}
+      end
+    else
+      # Fallback for local development or testing without a cluster
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        AgentRunner.run(issue, self(), attempt: attempt)
+      end)
+    end
+  end
+
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
-    recipient = self()
+    case k8s_spawn_pod(issue, attempt) do
+      {:ok, pid_or_podname} ->
+        # To monitor K8s pod completion without blocking, we would need to watch the Pod API.
+        # For simplicity in this adaptation, we can spawn a local task that monitors the Pod
+        # via K8s API polling and sends a {:DOWN, ref, :process, fake_pid, reason} when it finishes.
+        # If it returned a local PID, we monitor it normally.
+        {fake_pid, ref} =
+          if is_pid(pid_or_podname) do
+            {pid_or_podname, Process.monitor(pid_or_podname)}
+          else
+            # Spawn a local monitor task for the K8s pod
+            monitor_pid = spawn_pod_monitor(pid_or_podname)
+            {monitor_pid, Process.monitor(monitor_pid)}
+          end
 
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt)
-         end) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
+        Logger.info("Dispatching issue to agent: #{issue_context(issue)} runner=#{inspect(pid_or_podname)} attempt=#{inspect(attempt)}")
 
         running =
           Map.put(state.running, issue.id, %{
-            pid: pid,
+            pid: fake_pid,
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
@@ -643,6 +727,63 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}"
         })
+    end
+  end
+
+  defp spawn_pod_monitor(pod_name) do
+    spawn(fn ->
+      monitor_pod_status(pod_name)
+    end)
+  end
+
+  defp monitor_pod_status(pod_name) do
+    namespace = System.get_env("POD_NAMESPACE", "default")
+    token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    if File.exists?(token_path) do
+      token = File.read!(token_path)
+
+      # Poll pod status
+      poll_loop(pod_name, namespace, token, ca_path)
+    else
+      # Should never happen if we spawned a pod, but exit normally if it does.
+      exit(:normal)
+    end
+  end
+
+  defp poll_loop(pod_name, namespace, token, ca_path) do
+    :timer.sleep(5000)
+
+    req =
+      Req.new(
+        base_url: "https://kubernetes.default.svc",
+        url: "/api/v1/namespaces/#{namespace}/pods/#{pod_name}",
+        method: :get,
+        auth: {:bearer, token},
+        connect_options: [cacertfile: ca_path]
+      )
+
+    case Req.request(req) do
+      {:ok, %Req.Response{status: 200, body: body}} ->
+        phase = get_in(body, ["status", "phase"])
+
+        cond do
+          phase == "Succeeded" ->
+            exit(:normal)
+
+          phase == "Failed" ->
+            exit(:pod_failed)
+
+          true ->
+            poll_loop(pod_name, namespace, token, ca_path)
+        end
+
+      {:ok, %Req.Response{status: 404}} ->
+        exit(:pod_deleted)
+
+      _ ->
+        poll_loop(pod_name, namespace, token, ca_path)
     end
   end
 

@@ -37,6 +37,52 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec internal_update(Conn.t(), map()) :: Conn.t()
+  def internal_update(conn, %{"issue_id" => issue_id, "update" => update}) do
+    # When keys are strings because of JSON decoding, we convert them safely to atoms
+    update = convert_keys_to_existing_atoms(update)
+
+    # We also need to map "event" value to an atom if it's a string safely
+    update =
+      if is_binary(update[:event]) do
+        try do
+          %{update | event: String.to_existing_atom(update[:event])}
+        rescue
+          ArgumentError -> update
+        end
+      else
+        update
+      end
+
+    if Process.whereis(orchestrator()) do
+      send(orchestrator(), {:codex_worker_update, issue_id, update})
+    end
+
+    json(conn, %{status: "ok"})
+  end
+
+  defp convert_keys_to_existing_atoms(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) ->
+        atom_key =
+          try do
+            String.to_existing_atom(k)
+          rescue
+            ArgumentError -> k
+          end
+
+        {atom_key, convert_keys_to_existing_atoms(v)}
+
+      {k, v} ->
+        {k, convert_keys_to_existing_atoms(v)}
+    end)
+  end
+
+  defp convert_keys_to_existing_atoms(list) when is_list(list),
+    do: Enum.map(list, &convert_keys_to_existing_atoms/1)
+
+  defp convert_keys_to_existing_atoms(other), do: other
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")
