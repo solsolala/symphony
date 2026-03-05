@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "symphony.fullname" . }}-config
+  labels:
+    {{- include "symphony.labels" . | nindent 4 }}
+data:
+  WORKFLOW.md: |
+    ---
+    tracker:
+      kind: linear
+      project_slug: "YOUR_PROJECT_SLUG"
+    workspace:
+      root: {{ .Values.workspaceRoot }}
+    agent:
+      max_concurrent_agents: 10
+      max_turns: 20
+    codex:
+      command: codex app-server
+    ---
+
+    You are working on a Linear issue {{ "{{" }} issue.identifier {{ "}}" }}.
+
+    Title: {{ "{{" }} issue.title {{ "}}" }}
+    Body: {{ "{{" }} issue.description {{ "}}" }}

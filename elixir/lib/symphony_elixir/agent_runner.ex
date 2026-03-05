@@ -44,6 +44,32 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
+  defp send_codex_update(_recipient, %Issue{id: issue_id}, message) when is_binary(issue_id) do
+    # When recipient is not a PID, we might be running in a remote pod
+    orchestrator_url = Application.get_env(:symphony_elixir, :orchestrator_url)
+
+    if orchestrator_url do
+      req =
+        Req.new(
+          base_url: orchestrator_url,
+          url: "/api/v1/internal/update",
+          method: :post,
+          json: %{issue_id: issue_id, update: message}
+        )
+
+      case Req.request(req) do
+        {:ok, _response} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("Failed to report codex update to remote orchestrator: #{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
