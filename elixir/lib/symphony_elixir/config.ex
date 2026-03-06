@@ -237,6 +237,16 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:tracker, :terminal_states])
   end
 
+  @spec jira_active_states() :: [String.t()]
+  def jira_active_states do
+    get_in(validated_workflow_options(), [:tracker, :active_states])
+  end
+
+  @spec jira_terminal_states() :: [String.t()]
+  def jira_terminal_states do
+    get_in(validated_workflow_options(), [:tracker, :terminal_states])
+  end
+
   @spec poll_interval_ms() :: pos_integer()
   def poll_interval_ms do
     get_in(validated_workflow_options(), [:polling, :interval_ms])
@@ -410,7 +420,6 @@ defmodule SymphonyElixir.Config do
     case tracker_kind() do
       "linear" -> :ok
       "memory" -> :ok
-      "jira" -> :ok
       "jira" -> :ok
       nil -> {:error, :missing_tracker_kind}
       other -> {:error, {:unsupported_tracker_kind, other}}
