@@ -42,16 +42,48 @@ tolerations: []
 affinity: {}
 
 # Symphony specific config
+tracker:
+  kind: jira
+  endpoint: ""
+  projectSlug: ""
+  apiKeyEnv: JIRA_API_TOKEN
+  assigneeEnv: ""
+  activeStates:
+    - Todo
+    - In Progress
+  terminalStates:
+    - Closed
+    - Cancelled
+    - Canceled
+    - Duplicate
+    - Done
+
+repository:
+  cloneUrl: ""
+  ref: "main"
+
+codex:
+  command: "codex app-server"
+
+runtimeServer:
+  host: "0.0.0.0"
+  port: 4000
+
 env:
   - name: PORT
     value: "4000"
-  - name: LINEAR_API_KEY
+  - name: JIRA_API_TOKEN
     value: ""
-    # Or load from secret:
+    # Or point tracker.apiKeyEnv at another env var.
+    # Prefer loading from a secret:
     # valueFrom:
     #   secretKeyRef:
-    #     name: linear-secret
+    #     name: jira-secret
     #     key: api-key
+  - name: OPENAI_API_KEY
+    value: ""
+    # Worker pods inherit OPENAI_API_KEY by default and need it for real Codex turns.
+    # Prefer loading from a secret in non-local environments.
 
 workspaceRoot: "/app/workspaces"
 
@@ -59,6 +91,12 @@ worker:
   image:
     repository: symphony
     tag: "latest"
+    pullPolicy: IfNotPresent
+  inheritEnv:
+    - JIRA_API_TOKEN
+    - OPENAI_API_KEY
+    - OPENAI_BASE_URL
+    - OPENAI_ORG_ID
   resources: {}
   nodeSelector: {}
   tolerations: []

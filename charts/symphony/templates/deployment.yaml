@@ -31,13 +31,52 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - symphony
+          args:
+            - --i-understand-that-this-will-be-running-without-the-usual-guardrails
+            - --port
+            - {{ .Values.runtimeServer.port | quote }}
+            - /app/WORKFLOW.md
           ports:
             - name: http
-              containerPort: 4000
+              containerPort: {{ .Values.runtimeServer.port }}
               protocol: TCP
           env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
             - name: WORKSPACE_ROOT
               value: {{ .Values.workspaceRoot | quote }}
+            - name: WORKER_IMAGE
+              value: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
+            - name: WORKER_IMAGE_PULL_POLICY
+              value: {{ .Values.worker.image.pullPolicy | quote }}
+            - name: WORKER_SERVICE_ACCOUNT_NAME
+              value: {{ include "symphony.serviceAccountName" . | quote }}
+            - name: WORKFLOW_CONFIGMAP_NAME
+              value: {{ printf "%s-config" (include "symphony.fullname" .) | quote }}
+            - name: WORKFLOW_CONFIGMAP_KEY
+              value: "WORKFLOW.md"
+            - name: WORKFLOW_FILE_PATH
+              value: "/app/WORKFLOW.md"
+            - name: WORKER_INHERIT_ENV
+              value: {{ join "," .Values.worker.inheritEnv | quote }}
+            - name: WORKER_RESOURCES_JSON
+              value: {{ toJson .Values.worker.resources | quote }}
+            - name: WORKER_NODE_SELECTOR_JSON
+              value: {{ toJson .Values.worker.nodeSelector | quote }}
+            - name: WORKER_TOLERATIONS_JSON
+              value: {{ toJson .Values.worker.tolerations | quote }}
+            - name: WORKER_AFFINITY_JSON
+              value: {{ toJson .Values.worker.affinity | quote }}
+            - name: WORKER_IMAGE_PULL_SECRETS_JSON
+              value: {{ toJson .Values.imagePullSecrets | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

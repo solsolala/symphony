@@ -8,18 +8,39 @@ data:
   WORKFLOW.md: |
     ---
     tracker:
-      kind: linear
-      project_slug: "YOUR_PROJECT_SLUG"
+      kind: {{ .Values.tracker.kind | quote }}
+      {{- with .Values.tracker.endpoint }}
+      endpoint: {{ . | quote }}
+      {{- end }}
+      project_slug: {{ .Values.tracker.projectSlug | quote }}
+      {{- with .Values.tracker.apiKeyEnv }}
+      api_key: {{ printf "$%s" . | quote }}
+      {{- end }}
+      {{- with .Values.tracker.assigneeEnv }}
+      assignee: {{ printf "$%s" . | quote }}
+      {{- end }}
+      active_states:
+        {{- toYaml .Values.tracker.activeStates | nindent 8 }}
+      terminal_states:
+        {{- toYaml .Values.tracker.terminalStates | nindent 8 }}
     workspace:
       root: {{ .Values.workspaceRoot }}
     agent:
       max_concurrent_agents: 10
       max_turns: 20
     codex:
-      command: codex app-server
+      command: {{ .Values.codex.command | quote }}
+    {{- with .Values.repository.cloneUrl }}
+    hooks:
+      after_create: |
+        git clone --depth 1{{- with $.Values.repository.ref }} --branch {{ . | quote }}{{- end }} {{ . | quote }} .
+    {{- end }}
+    server:
+      host: {{ .Values.runtimeServer.host | quote }}
+      port: {{ .Values.runtimeServer.port }}
     ---
 
-    You are working on a Linear issue {{ "{{" }} issue.identifier {{ "}}" }}.
+    You are working on a {{ .Values.tracker.kind }} issue {{ "{{" }} issue.identifier {{ "}}" }}.
 
     Title: {{ "{{" }} issue.title {{ "}}" }}
     Body: {{ "{{" }} issue.description {{ "}}" }}

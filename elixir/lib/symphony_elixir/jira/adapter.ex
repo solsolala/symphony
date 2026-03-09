@@ -18,15 +18,13 @@ defmodule SymphonyElixir.Jira.Adapter do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
-    # TODO: Implement Jira create comment API call
-    :ok
+    client_module().create_comment(issue_id, body)
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
-    # TODO: Implement Jira update issue state API call
-    :ok
+    client_module().update_issue_state(issue_id, state_name)
   end
 
   defp client_module do

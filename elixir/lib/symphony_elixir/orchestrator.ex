@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
-  Polls Linear and dispatches repository copies to Codex-backed workers.
+  Polls the configured tracker and dispatches repository copies to Codex-backed workers.
   """
 
   use GenServer
@@ -12,6 +12,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @guardrails_acknowledgement_flag "--i-understand-that-this-will-be-running-without-the-usual-guardrails"
+  @default_worker_env_names [
+    "LINEAR_API_KEY",
+    "LINEAR_ASSIGNEE",
+    "JIRA_API_TOKEN",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID"
+  ]
+  @default_worker_image "symphony:latest"
+  @default_worker_image_pull_policy "IfNotPresent"
+  @default_worker_workflow_file_path "/app/WORKFLOW.md"
+  @default_worker_workflow_config_key "WORKFLOW.md"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -189,6 +202,18 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         state
 
+      {:error, :missing_jira_endpoint} ->
+        Logger.error("Jira endpoint missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_jira_api_token} ->
+        Logger.error("Jira API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_jira_project_slug} ->
+        Logger.error("Jira project slug missing in WORKFLOW.md")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
@@ -228,7 +253,7 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->
@@ -565,14 +590,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminal_state_set do
-    Config.linear_terminal_states()
+    Config.tracker_terminal_states()
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
   end
 
   defp active_state_set do
-    Config.linear_active_states()
+    Config.tracker_active_states()
     |> Enum.map(&normalize_issue_state/1)
     |> Enum.filter(&(&1 != ""))
     |> MapSet.new()
@@ -609,34 +634,7 @@ defmodule SymphonyElixir.Orchestrator do
     safe_id = String.replace(issue.identifier || issue.id, ~r/[^a-z0-9-]/i, "-") |> String.downcase()
     pod_name = "symphony-worker-#{safe_id}-#{:os.system_time(:millisecond)}"
 
-    # Normally we would fetch the image dynamically from env. Let's use a sensible default.
-    image = System.get_env("WORKER_IMAGE", "symphony:latest")
-
-    pod_manifest = %{
-      "apiVersion" => "v1",
-      "kind" => "Pod",
-      "metadata" => %{
-        "name" => pod_name,
-        "labels" => %{
-          "app" => "symphony-worker",
-          "issue_id" => issue.id
-        }
-      },
-      "spec" => %{
-        "restartPolicy" => "Never",
-        "containers" => [
-          %{
-            "name" => "worker",
-            "image" => image,
-            "command" => ["symphony", "--run-agent", issue.id, "--orchestrator-url", orchestrator_url],
-            "env" => [
-              %{"name" => "LINEAR_API_KEY", "value" => System.get_env("LINEAR_API_KEY", "")},
-              %{"name" => "WORKSPACE_ROOT", "value" => System.get_env("WORKSPACE_ROOT", "/app/workspaces")}
-            ]
-          }
-        ]
-      }
-    }
+    pod_manifest = build_worker_pod_manifest(issue, pod_name, orchestrator_url)
 
     token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -671,6 +669,186 @@ defmodule SymphonyElixir.Orchestrator do
       end)
     end
   end
+
+  @doc false
+  @spec build_worker_pod_manifest_for_test(map(), String.t()) :: map()
+  def build_worker_pod_manifest_for_test(issue, orchestrator_url \\ "http://symphony:4000") do
+    build_worker_pod_manifest(issue, "symphony-worker-test", orchestrator_url)
+  end
+
+  defp build_worker_pod_manifest(issue, pod_name, orchestrator_url) do
+    workflow_file_path = System.get_env("WORKFLOW_FILE_PATH", @default_worker_workflow_file_path)
+    workflow_configmap_name = present_env("WORKFLOW_CONFIGMAP_NAME")
+    workflow_configmap_key = System.get_env("WORKFLOW_CONFIGMAP_KEY", @default_worker_workflow_config_key)
+
+    container =
+      %{
+        "name" => "worker",
+        "image" => System.get_env("WORKER_IMAGE", @default_worker_image),
+        "imagePullPolicy" => System.get_env("WORKER_IMAGE_PULL_POLICY", @default_worker_image_pull_policy),
+        "workingDir" => Path.dirname(workflow_file_path),
+        "command" => ["symphony"],
+        "args" => worker_args(issue.id, orchestrator_url, workflow_file_path),
+        "env" => worker_env()
+      }
+      |> maybe_put("resources", decode_json_env("WORKER_RESOURCES_JSON", :map))
+      |> maybe_put("volumeMounts", workflow_volume_mounts(workflow_configmap_name, workflow_file_path, workflow_configmap_key))
+
+    spec =
+      %{
+        "restartPolicy" => "Never",
+        "containers" => [container]
+      }
+      |> maybe_put("serviceAccountName", present_env("WORKER_SERVICE_ACCOUNT_NAME"))
+      |> maybe_put("imagePullSecrets", decode_json_env("WORKER_IMAGE_PULL_SECRETS_JSON", :list))
+      |> maybe_put("nodeSelector", decode_json_env("WORKER_NODE_SELECTOR_JSON", :map))
+      |> maybe_put("tolerations", decode_json_env("WORKER_TOLERATIONS_JSON", :list))
+      |> maybe_put("affinity", decode_json_env("WORKER_AFFINITY_JSON", :map))
+      |> maybe_put("volumes", workflow_volumes(workflow_configmap_name, workflow_configmap_key))
+
+    %{
+      "apiVersion" => "v1",
+      "kind" => "Pod",
+      "metadata" => %{
+        "name" => pod_name,
+        "labels" => %{
+          "app" => "symphony-worker",
+          "issue_id" => issue.id
+        }
+      },
+      "spec" => spec
+    }
+  end
+
+  defp worker_args(issue_id, orchestrator_url, workflow_file_path) do
+    [
+      @guardrails_acknowledgement_flag,
+      "--run-agent",
+      issue_id,
+      "--orchestrator-url",
+      orchestrator_url,
+      workflow_file_path
+    ]
+  end
+
+  defp worker_env do
+    [
+      %{"name" => "WORKSPACE_ROOT", "value" => System.get_env("WORKSPACE_ROOT", "/app/workspaces")}
+      | inherited_worker_env()
+    ]
+    |> dedupe_env_entries()
+  end
+
+  defp inherited_worker_env do
+    worker_inherited_env_names()
+    |> Enum.reduce([], fn env_name, acc ->
+      case System.get_env(env_name) do
+        value when is_binary(value) ->
+          [%{"name" => env_name, "value" => value} | acc]
+
+        _ ->
+          acc
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  defp worker_inherited_env_names do
+    case System.get_env("WORKER_INHERIT_ENV") do
+      value when is_binary(value) ->
+        value
+        |> String.split(",", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.reject(&(&1 == ""))
+        |> case do
+          [] -> @default_worker_env_names
+          names -> names
+        end
+
+      _ ->
+        @default_worker_env_names
+    end
+  end
+
+  defp dedupe_env_entries(entries) do
+    {deduped, _seen} =
+      Enum.reduce(entries, {[], MapSet.new()}, fn
+        %{"name" => name} = entry, {acc, seen} when is_binary(name) ->
+          if MapSet.member?(seen, name) do
+            {acc, seen}
+          else
+            {[entry | acc], MapSet.put(seen, name)}
+          end
+
+        _entry, acc ->
+          acc
+      end)
+
+    Enum.reverse(deduped)
+  end
+
+  defp workflow_volume_mounts(nil, _workflow_file_path, _workflow_configmap_key), do: []
+
+  defp workflow_volume_mounts(_workflow_configmap_name, workflow_file_path, workflow_configmap_key) do
+    [
+      %{
+        "name" => "workflow",
+        "mountPath" => workflow_file_path,
+        "subPath" => workflow_configmap_key
+      }
+    ]
+  end
+
+  defp workflow_volumes(nil, _workflow_configmap_key), do: []
+
+  defp workflow_volumes(workflow_configmap_name, _workflow_configmap_key) do
+    [
+      %{
+        "name" => "workflow",
+        "configMap" => %{
+          "name" => workflow_configmap_name
+        }
+      }
+    ]
+  end
+
+  defp decode_json_env(env_name, expected_type) when expected_type in [:map, :list] do
+    case present_env(env_name) do
+      nil ->
+        nil
+
+      json ->
+        case Jason.decode(json) do
+          {:ok, decoded} ->
+            normalize_decoded_env(decoded, expected_type)
+
+          {:error, reason} ->
+            Logger.warning("Ignoring invalid #{env_name} JSON: #{inspect(reason)}")
+            nil
+        end
+    end
+  end
+
+  defp normalize_decoded_env(decoded, :map) when is_map(decoded) and map_size(decoded) > 0, do: decoded
+  defp normalize_decoded_env(decoded, :list) when is_list(decoded) and decoded != [], do: decoded
+  defp normalize_decoded_env(_decoded, _expected_type), do: nil
+
+  defp present_env(env_name) when is_binary(env_name) do
+    case System.get_env(env_name) do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: trimmed
+
+      _ ->
+        nil
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, value) when is_map(value) and map_size(value) == 0, do: map
+  defp maybe_put(map, _key, []), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
     case k8s_spawn_pod(issue, attempt) do
@@ -915,7 +1093,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(_identifier), do: :ok
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.linear_terminal_states()) do
+    case Tracker.fetch_issues_by_states(Config.tracker_terminal_states()) do
       {:ok, issues} ->
         issues
         |> Enum.each(fn

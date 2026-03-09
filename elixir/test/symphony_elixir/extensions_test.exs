@@ -5,6 +5,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Jira.Adapter, as: JiraAdapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -36,6 +37,33 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeJiraClient do
+    def fetch_candidate_issues do
+      send(self(), :jira_fetch_candidate_issues_called)
+      {:ok, [:jira_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:jira_fetch_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:jira_fetch_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:jira_create_comment_called, issue_id, body})
+      :ok
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:jira_update_issue_state_called, issue_id, state_name})
+      :ok
     end
   end
 
@@ -79,12 +107,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    jira_client_module = Application.get_env(:symphony_elixir, :jira_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(jira_client_module) do
+        Application.delete_env(:symphony_elixir, :jira_client_module)
+      else
+        Application.put_env(:symphony_elixir, :jira_client_module, jira_client_module)
       end
     end)
 
@@ -200,6 +235,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "jira")
+    assert SymphonyElixir.Tracker.adapter() == JiraAdapter
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
@@ -317,6 +355,25 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "jira adapter delegates reads and writes" do
+    Application.put_env(:symphony_elixir, :jira_client_module, FakeJiraClient)
+
+    assert {:ok, [:jira_candidate]} = JiraAdapter.fetch_candidate_issues()
+    assert_receive :jira_fetch_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = JiraAdapter.fetch_issues_by_states(["Todo"])
+    assert_receive {:jira_fetch_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["issue-1"]} = JiraAdapter.fetch_issue_states_by_ids(["issue-1"])
+    assert_receive {:jira_fetch_issue_states_by_ids_called, ["issue-1"]}
+
+    assert :ok = JiraAdapter.create_comment("issue-1", "hello")
+    assert_receive {:jira_create_comment_called, "issue-1", "hello"}
+
+    assert :ok = JiraAdapter.update_issue_state("issue-1", "Done")
+    assert_receive {:jira_update_issue_state_called, "issue-1", "Done"}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config do
   @default_terminal_states ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
   @default_linear_endpoint "https://api.linear.app/graphql"
   @default_prompt_template """
-  You are working on a Linear issue.
+  You are working on an issue.
 
   Identifier: {{ issue.identifier }}
   Title: {{ issue.title }}
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.Config do
                                default: %{},
                                keys: [
                                  kind: [type: {:or, [:string, nil]}, default: nil],
-                                 endpoint: [type: :string, default: @default_linear_endpoint],
+                                 endpoint: [type: {:or, [:string, nil]}, default: nil],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
                                  assignee: [type: {:or, [:string, nil]}, default: nil],
@@ -183,10 +183,11 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:tracker, :kind])
   end
 
-  @spec linear_endpoint() :: String.t()
   @spec jira_endpoint() :: String.t() | nil
   def jira_endpoint do
-    get_in(validated_workflow_options(), [:tracker, :endpoint])
+    validated_workflow_options()
+    |> get_in([:tracker, :endpoint])
+    |> normalize_optional_binary()
   end
 
   @spec jira_api_token() :: String.t() | nil
@@ -202,8 +203,15 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:tracker, :project_slug])
   end
 
+  @spec linear_endpoint() :: String.t()
   def linear_endpoint do
-    get_in(validated_workflow_options(), [:tracker, :endpoint])
+    validated_workflow_options()
+    |> get_in([:tracker, :endpoint])
+    |> normalize_optional_binary()
+    |> then(fn
+      nil -> @default_linear_endpoint
+      endpoint -> endpoint
+    end)
   end
 
   @spec linear_api_token() :: String.t() | nil
@@ -229,11 +237,21 @@ defmodule SymphonyElixir.Config do
 
   @spec linear_active_states() :: [String.t()]
   def linear_active_states do
+    tracker_active_states()
+  end
+
+  @spec tracker_active_states() :: [String.t()]
+  def tracker_active_states do
     get_in(validated_workflow_options(), [:tracker, :active_states])
   end
 
   @spec linear_terminal_states() :: [String.t()]
   def linear_terminal_states do
+    tracker_terminal_states()
+  end
+
+  @spec tracker_terminal_states() :: [String.t()]
+  def tracker_terminal_states do
     get_in(validated_workflow_options(), [:tracker, :terminal_states])
   end
 
@@ -385,6 +403,7 @@ defmodule SymphonyElixir.Config do
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
          :ok <- require_linear_project(),
+         :ok <- require_jira_endpoint(),
          :ok <- require_jira_token(),
          :ok <- require_jira_project(),
          :ok <- require_valid_codex_runtime_settings() do
@@ -410,7 +429,6 @@ defmodule SymphonyElixir.Config do
     case tracker_kind() do
       "linear" -> :ok
       "memory" -> :ok
-      "jira" -> :ok
       "jira" -> :ok
       nil -> {:error, :missing_tracker_kind}
       other -> {:error, {:unsupported_tracker_kind, other}}
@@ -438,6 +456,20 @@ defmodule SymphonyElixir.Config do
           :ok
         else
           {:error, :missing_jira_api_token}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp require_jira_endpoint do
+    case tracker_kind() do
+      "jira" ->
+        if is_binary(jira_endpoint()) do
+          :ok
+        else
+          {:error, :missing_jira_endpoint}
         end
 
       _ ->
@@ -985,4 +1017,13 @@ defmodule SymphonyElixir.Config do
   end
 
   defp normalize_secret_value(_value), do: nil
+
+  defp normalize_optional_binary(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_binary(_value), do: nil
 end

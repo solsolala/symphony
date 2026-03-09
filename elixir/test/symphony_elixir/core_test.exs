@@ -2,6 +2,14 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
   test "config defaults and validation checks" do
+    previous_jira_api_token = System.get_env("JIRA_API_TOKEN")
+
+    on_exit(fn ->
+      restore_env("JIRA_API_TOKEN", previous_jira_api_token)
+    end)
+
+    System.delete_env("JIRA_API_TOKEN")
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       tracker_project_slug: nil,
@@ -38,6 +46,42 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, :missing_linear_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_jira_endpoint} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://jira.company.internal",
+      tracker_api_token: nil,
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_jira_api_token} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://jira.company.internal",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: nil
+    )
+
+    assert {:error, :missing_jira_project_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://jira.company.internal",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: "PLATFORM"
+    )
+
+    assert :ok = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
@@ -130,6 +174,27 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.linear_assignee() == env_assignee
+  end
+
+  test "jira api token resolves from JIRA_API_TOKEN env var" do
+    previous_jira_api_token = System.get_env("JIRA_API_TOKEN")
+    env_api_token = "test-jira-api-token"
+
+    on_exit(fn -> restore_env("JIRA_API_TOKEN", previous_jira_api_token) end)
+    System.put_env("JIRA_API_TOKEN", env_api_token)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://jira.company.internal",
+      tracker_api_token: nil,
+      tracker_project_slug: "PLATFORM",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.jira_endpoint() == "https://jira.company.internal"
+    assert Config.jira_api_token() == env_api_token
+    assert Config.jira_project_slug() == "PLATFORM"
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -668,7 +733,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on an issue."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
