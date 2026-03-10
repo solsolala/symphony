@@ -197,6 +197,23 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
+  test "jira endpoint prefers JIRA_BASE_URL env var when present" do
+    previous_jira_base_url = System.get_env("JIRA_BASE_URL")
+
+    on_exit(fn -> restore_env("JIRA_BASE_URL", previous_jira_base_url) end)
+    System.put_env("JIRA_BASE_URL", "https://jira.user.internal")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "jira",
+      tracker_endpoint: "https://jira.workflow.internal",
+      tracker_api_token: "jira-token",
+      tracker_project_slug: "PLATFORM",
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.jira_endpoint() == "https://jira.user.internal"
+  end
+
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 

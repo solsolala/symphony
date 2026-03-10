@@ -25,6 +25,7 @@ Real Codex turns need `OPENAI_API_KEY` in `env` so the worker pod inherits it be
 - `JIRA_API_TOKEN`
 - `MONGODB_URI`
 - Optional: `SYMPHONY_DEFAULT_JIRA_BASE_URL`
+- Optional: `SYMPHONY_DEFAULT_GITHUB_BASE_URL`
 
 ## 1. Build And Push The Image
 
@@ -46,6 +47,9 @@ kubectl -n symphony create secret generic symphony-openai \
 kubectl -n symphony create secret generic symphony-jira \
   --from-literal=api-key="$JIRA_API_TOKEN"
 
+kubectl -n symphony create secret generic symphony-github \
+  --from-literal=token="$GITHUB_TOKEN"
+
 kubectl -n symphony create secret generic symphony-mongo \
   --from-literal=uri="$MONGODB_URI"
 ```
@@ -53,6 +57,7 @@ kubectl -n symphony create secret generic symphony-mongo \
 Each deployed Symphony instance uses the Jira token you inject here. The token is not baked into the image or chart.
 
 If every user should log into the dashboard against the same Jira server, also set `SYMPHONY_DEFAULT_JIRA_BASE_URL` in the deployment env. That prefills the login form for internal Jira deployments.
+If every user should log into the dashboard against the same GitHub or GitHub Enterprise server, also set `SYMPHONY_DEFAULT_GITHUB_BASE_URL`.
 
 If you pull from a private registry, create an image pull secret too and reference it from `imagePullSecrets`.
 
@@ -95,11 +100,29 @@ env:
     value: "4000"
   - name: SYMPHONY_DEFAULT_JIRA_BASE_URL
     value: https://jira.company.internal
+  - name: SYMPHONY_DEFAULT_GITHUB_BASE_URL
+    value: https://github.company.internal
   - name: JIRA_API_TOKEN
     valueFrom:
       secretKeyRef:
         name: symphony-jira
         key: api-key
+  - name: JIRA_BASE_URL
+    value: https://jira.company.internal
+  - name: GITHUB_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: symphony-github
+        key: token
+  - name: GH_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: symphony-github
+        key: token
+  - name: GITHUB_SERVER_URL
+    value: https://github.company.internal
+  - name: GITHUB_API_URL
+    value: https://github.company.internal/api/v3
   - name: OPENAI_API_KEY
     valueFrom:
       secretKeyRef:
@@ -116,11 +139,14 @@ Notes:
 
 - `tracker.endpoint` should point at your Jira base URL. For Jira Cloud that is typically `https://your-domain.atlassian.net`; for internal Jira it can be something like `https://jira.company.internal`.
 - `SYMPHONY_DEFAULT_JIRA_BASE_URL` pre-populates the browser login form with the Jira base URL users should authenticate against.
-- Dashboard access requires both a Jira token and a GitHub token per user. Those user-level tokens are stored in MongoDB after verification.
+- `SYMPHONY_DEFAULT_GITHUB_BASE_URL` pre-populates the browser login form with the GitHub or GitHub Enterprise base URL users should authenticate against.
+- Dashboard access requires both a Jira token and a GitHub token per user, and each token can target an internal Jira or GitHub Enterprise server.
 - The orchestrator's tracker polling path is still driven by `tracker.*` plus deployment env like `JIRA_API_TOKEN`; the per-user login credentials are currently used for dashboard identity and remembered session persistence.
-- `worker.inheritEnv` already includes `JIRA_API_TOKEN`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_ORG_ID`.
+- Worker pods match the issue assignee against the stored Jira identity and, when they find a match, inject that user's `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_SERVER_URL`, and `GITHUB_API_URL`.
+- `worker.inheritEnv` already includes `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_SERVER_URL`, `GITHUB_API_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_ORG_ID`.
 - If you change `tracker.apiKeyEnv`, make sure the matching env var is present in `env`.
 - If workers need extra credentials, add the env var to both `env` and `worker.inheritEnv`.
+- The default `after_create` hook will use `GITHUB_TOKEN` for HTTPS clone when the repository host matches `GITHUB_SERVER_URL`, which supports private GitHub Enterprise repositories.
 - `MONGODB_URI` should include the database name Symphony will use for user-scoped session persistence.
 - `mongo.collection` defaults to `user_sessions`.
 - User-specific Jira/GitHub/Codex session metadata is now persisted in MongoDB instead of local disk.

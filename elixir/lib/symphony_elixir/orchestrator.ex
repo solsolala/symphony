@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, BrowserSessionStore, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -16,7 +16,12 @@ defmodule SymphonyElixir.Orchestrator do
   @default_worker_env_names [
     "LINEAR_API_KEY",
     "LINEAR_ASSIGNEE",
+    "JIRA_BASE_URL",
     "JIRA_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_SERVER_URL",
+    "GITHUB_API_URL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_ORG_ID"
@@ -623,7 +628,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp k8s_spawn_pod(issue, attempt) do
+  defp k8s_spawn_pod(issue, attempt, owner_profile) do
     # Only spawn real pods if running inside a cluster
     # Alternatively, you can toggle this based on an env var
     namespace = System.get_env("POD_NAMESPACE", "default")
@@ -634,7 +639,7 @@ defmodule SymphonyElixir.Orchestrator do
     safe_id = String.replace(issue.identifier || issue.id, ~r/[^a-z0-9-]/i, "-") |> String.downcase()
     pod_name = "symphony-worker-#{safe_id}-#{:os.system_time(:millisecond)}"
 
-    pod_manifest = build_worker_pod_manifest(issue, pod_name, orchestrator_url)
+    pod_manifest = build_worker_pod_manifest(issue, pod_name, orchestrator_url, owner_profile)
 
     token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -671,12 +676,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec build_worker_pod_manifest_for_test(map(), String.t()) :: map()
-  def build_worker_pod_manifest_for_test(issue, orchestrator_url \\ "http://symphony:4000") do
-    build_worker_pod_manifest(issue, "symphony-worker-test", orchestrator_url)
+  @spec build_worker_pod_manifest_for_test(map(), String.t(), keyword()) :: map()
+  def build_worker_pod_manifest_for_test(issue, orchestrator_url \\ "http://symphony:4000", opts \\ []) do
+    build_worker_pod_manifest(
+      issue,
+      "symphony-worker-test",
+      orchestrator_url,
+      Keyword.get(opts, :owner_profile)
+    )
   end
 
-  defp build_worker_pod_manifest(issue, pod_name, orchestrator_url) do
+  defp build_worker_pod_manifest(issue, pod_name, orchestrator_url, owner_profile) do
     workflow_file_path = System.get_env("WORKFLOW_FILE_PATH", @default_worker_workflow_file_path)
     workflow_configmap_name = present_env("WORKFLOW_CONFIGMAP_NAME")
     workflow_configmap_key = System.get_env("WORKFLOW_CONFIGMAP_KEY", @default_worker_workflow_config_key)
@@ -689,7 +699,7 @@ defmodule SymphonyElixir.Orchestrator do
         "workingDir" => Path.dirname(workflow_file_path),
         "command" => ["symphony"],
         "args" => worker_args(issue.id, orchestrator_url, workflow_file_path),
-        "env" => worker_env()
+        "env" => worker_env(owner_profile)
       }
       |> maybe_put("resources", decode_json_env("WORKER_RESOURCES_JSON", :map))
       |> maybe_put("volumeMounts", workflow_volume_mounts(workflow_configmap_name, workflow_file_path, workflow_configmap_key))
@@ -718,6 +728,7 @@ defmodule SymphonyElixir.Orchestrator do
       },
       "spec" => spec
     }
+    |> maybe_put_in(["metadata", "labels", "worker_user_id"], owner_profile && owner_profile["user_id"])
   end
 
   defp worker_args(issue_id, orchestrator_url, workflow_file_path) do
@@ -731,12 +742,56 @@ defmodule SymphonyElixir.Orchestrator do
     ]
   end
 
-  defp worker_env do
+  defp worker_env(owner_profile) do
     [
       %{"name" => "WORKSPACE_ROOT", "value" => System.get_env("WORKSPACE_ROOT", "/app/workspaces")}
-      | inherited_worker_env()
+      | owner_worker_env(owner_profile)
     ]
+    |> Kernel.++(inherited_worker_env())
     |> dedupe_env_entries()
+  end
+
+  defp owner_worker_env(nil), do: []
+
+  defp owner_worker_env(profile) when is_map(profile) do
+    jira = Map.get(profile, "jira", %{})
+    github = Map.get(profile, "github", %{})
+
+    [
+      env_entry("SYMPHONY_WORKER_USER_ID", profile["user_id"]),
+      env_entry("JIRA_BASE_URL", jira["base_url"]),
+      env_entry("JIRA_API_TOKEN", jira["token"]),
+      env_entry("GITHUB_TOKEN", github["token"]),
+      env_entry("GH_TOKEN", github["token"]),
+      env_entry("GITHUB_SERVER_URL", github["base_url"]),
+      env_entry("GITHUB_API_URL", github["api_url"]),
+      env_entry("GH_HOST", github_host(github["base_url"]))
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp env_entry(_name, nil), do: nil
+  defp env_entry(_name, ""), do: nil
+  defp env_entry(name, value), do: %{"name" => name, "value" => value}
+
+  defp github_host(base_url) when is_binary(base_url) do
+    case URI.parse(base_url) do
+      %URI{host: host} when is_binary(host) and host != "" -> host
+      _ -> nil
+    end
+  end
+
+  defp github_host(_base_url), do: nil
+
+  defp maybe_put_in(map, _path, nil), do: map
+
+  defp maybe_put_in(map, [key], value) do
+    Map.put(map, key, value)
+  end
+
+  defp maybe_put_in(map, [key | rest], value) do
+    nested = Map.get(map, key, %{})
+    Map.put(map, key, maybe_put_in(nested, rest, value))
   end
 
   defp inherited_worker_env do
@@ -851,7 +906,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp do_dispatch_issue(%State{} = state, issue, attempt) do
-    case k8s_spawn_pod(issue, attempt) do
+    owner_profile = worker_owner_profile(issue)
+
+    case k8s_spawn_pod(issue, attempt, owner_profile) do
       {:ok, pid_or_podname} ->
         # To monitor K8s pod completion without blocking, we would need to watch the Pod API.
         # For simplicity in this adaptation, we can spawn a local task that monitors the Pod
@@ -874,6 +931,8 @@ defmodule SymphonyElixir.Orchestrator do
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
+            worker_user_id: owner_profile && owner_profile["user_id"],
+            worker_github_login: get_in(owner_profile || %{}, ["github", "login"]),
             session_id: nil,
             last_codex_message: nil,
             last_codex_timestamp: nil,
@@ -912,6 +971,16 @@ defmodule SymphonyElixir.Orchestrator do
     spawn(fn ->
       monitor_pod_status(pod_name)
     end)
+  end
+
+  defp worker_owner_profile(issue) when is_map(issue) do
+    BrowserSessionStore.find_profile_for_issue(browser_session_store(), issue)
+  end
+
+  defp worker_owner_profile(_issue), do: nil
+
+  defp browser_session_store do
+    Application.get_env(:symphony_elixir, :browser_session_store, BrowserSessionStore)
   end
 
   defp monitor_pod_status(pod_name) do
@@ -1245,6 +1314,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           identifier: metadata.identifier,
           state: metadata.issue.state,
+          worker_user_id: Map.get(metadata, :worker_user_id),
+          worker_github_login: Map.get(metadata, :worker_github_login),
           session_id: metadata.session_id,
           thread_id: metadata.thread_id,
           turn_id: metadata.turn_id,

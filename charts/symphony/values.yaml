@@ -79,6 +79,9 @@ env:
   - name: SYMPHONY_DEFAULT_JIRA_BASE_URL
     value: ""
     # Optional. Prefills the login form with your Jira Cloud or internal Jira base URL.
+  - name: SYMPHONY_DEFAULT_GITHUB_BASE_URL
+    value: ""
+    # Optional. Prefills the login form with your GitHub or GitHub Enterprise base URL.
   - name: JIRA_API_TOKEN
     value: ""
     # Or point tracker.apiKeyEnv at another env var.
@@ -87,10 +90,25 @@ env:
     #   secretKeyRef:
     #     name: jira-secret
     #     key: api-key
+  - name: JIRA_BASE_URL
+    value: ""
+    # Optional deployment-wide Jira base URL fallback for worker pods.
   - name: OPENAI_API_KEY
     value: ""
     # Worker pods inherit OPENAI_API_KEY by default and need it for real Codex turns.
     # Prefer loading from a secret in non-local environments.
+  - name: GITHUB_TOKEN
+    value: ""
+    # Optional deployment-wide fallback for private GitHub clone/push access.
+  - name: GH_TOKEN
+    value: ""
+    # Optional alias for GitHub CLI-compatible auth.
+  - name: GITHUB_SERVER_URL
+    value: ""
+    # Optional deployment-wide GitHub or GitHub Enterprise web base URL.
+  - name: GITHUB_API_URL
+    value: ""
+    # Optional deployment-wide GitHub or GitHub Enterprise API base URL.
   - name: MONGODB_URI
     value: ""
     # User-scoped Jira/GitHub/Codex session metadata is persisted to MongoDB.
@@ -104,7 +122,12 @@ worker:
     tag: "latest"
     pullPolicy: IfNotPresent
   inheritEnv:
+    - JIRA_BASE_URL
     - JIRA_API_TOKEN
+    - GITHUB_TOKEN
+    - GH_TOKEN
+    - GITHUB_SERVER_URL
+    - GITHUB_API_URL
     - OPENAI_API_KEY
     - OPENAI_BASE_URL
     - OPENAI_ORG_ID

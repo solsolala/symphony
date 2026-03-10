@@ -24,4 +24,5 @@ config :symphony_elixir,
      end),
   mongodb_topology: SymphonyElixir.Mongo,
   browser_session_store_collection: System.get_env("SYMPHONY_BROWSER_SESSION_COLLECTION", "user_sessions"),
-  default_jira_base_url: System.get_env("SYMPHONY_DEFAULT_JIRA_BASE_URL")
+  default_jira_base_url: System.get_env("SYMPHONY_DEFAULT_JIRA_BASE_URL"),
+  default_github_base_url: System.get_env("SYMPHONY_DEFAULT_GITHUB_BASE_URL")

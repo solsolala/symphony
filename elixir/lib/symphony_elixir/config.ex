@@ -185,9 +185,10 @@ defmodule SymphonyElixir.Config do
 
   @spec jira_endpoint() :: String.t() | nil
   def jira_endpoint do
-    validated_workflow_options()
-    |> get_in([:tracker, :endpoint])
-    |> normalize_optional_binary()
+    case System.get_env("JIRA_BASE_URL") |> normalize_optional_binary() do
+      endpoint when is_binary(endpoint) -> endpoint
+      _ -> validated_workflow_options() |> get_in([:tracker, :endpoint]) |> normalize_optional_binary()
+    end
   end
 
   @spec jira_api_token() :: String.t() | nil

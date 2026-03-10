@@ -33,7 +33,15 @@ data:
     {{- with .Values.repository.cloneUrl }}
     hooks:
       after_create: |
-        git clone --depth 1{{- with $.Values.repository.ref }} --branch {{ . | quote }}{{- end }} {{ . | quote }} .
+        REPO_URL={{ . | quote }}
+        REPO_HOST=$(printf '%s' "$REPO_URL" | sed -E 's#^[a-z]+://([^/@]+@)?([^/:]+).*$#\2#')
+        GITHUB_HOST=$(printf '%s' "${GITHUB_SERVER_URL:-}" | sed -E 's#^https?://([^/]+).*$#\1#')
+        if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "$REPO_HOST" ] && [ "$REPO_HOST" = "$GITHUB_HOST" ]; then
+          AUTH_HEADER=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          git -c "http.https://$REPO_HOST/.extraheader=AUTHORIZATION: basic $AUTH_HEADER" clone --depth 1{{- with $.Values.repository.ref }} --branch {{ . | quote }}{{- end }} "$REPO_URL" .
+        else
+          git clone --depth 1{{- with $.Values.repository.ref }} --branch {{ . | quote }}{{- end }} "$REPO_URL" .
+        fi
     {{- end }}
     server:
       host: {{ .Values.runtimeServer.host | quote }}

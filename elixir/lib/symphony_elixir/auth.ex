@@ -15,9 +15,10 @@ defmodule SymphonyElixir.Auth do
   def authenticate(params) when is_map(params) do
     with {:ok, jira_base_url} <- required_string(params, ["jira_base_url", :jira_base_url], :missing_jira_base_url),
          {:ok, jira_token} <- required_string(params, ["jira_token", :jira_token], :missing_jira_token),
+         {:ok, github_base_url} <- required_string(params, ["github_base_url", :github_base_url], :missing_github_base_url),
          {:ok, github_token} <- required_string(params, ["github_token", :github_token], :missing_github_token),
          {:ok, jira_identity} <- JiraClient.fetch_identity(jira_base_url, jira_token),
-         {:ok, github_identity} <- GitHubClient.fetch_identity(github_token) do
+         {:ok, github_identity} <- GitHubClient.fetch_identity(github_base_url, github_token) do
       user_id = build_user_id(jira_identity, github_identity)
 
       {:ok,
@@ -35,6 +36,8 @@ defmodule SymphonyElixir.Auth do
            },
            "github" => %{
              "token" => github_token,
+             "base_url" => github_identity.base_url,
+             "api_url" => github_identity.api_url,
              "login" => github_identity.login,
              "name" => github_identity.name,
              "id" => github_identity.id,
@@ -50,8 +53,10 @@ defmodule SymphonyElixir.Auth do
   @spec error_message(term()) :: String.t()
   def error_message(:missing_jira_base_url), do: "Jira base URL is required."
   def error_message(:missing_jira_token), do: "Jira token is required."
+  def error_message(:missing_github_base_url), do: "GitHub base URL is required."
   def error_message(:missing_github_token), do: "GitHub token is required."
   def error_message(:invalid_jira_base_url), do: "Jira base URL must be a valid http or https URL."
+  def error_message(:invalid_github_base_url), do: "GitHub base URL must be a valid GitHub or GitHub Enterprise URL."
   def error_message(:invalid_jira_token), do: "Jira token could not be verified."
   def error_message(:invalid_github_token), do: "GitHub token could not be verified."
   def error_message({:jira_api_status, status}), do: "Jira authentication failed with status #{status}."

@@ -55,6 +55,14 @@ defmodule SymphonyElixir.BrowserSessionStore do
     GenServer.call(server, {:capture_issue, profile_id, issue_payload})
   end
 
+  @spec find_profile_for_issue(map()) :: profile() | nil
+  def find_profile_for_issue(issue), do: find_profile_for_issue(__MODULE__, issue)
+
+  @spec find_profile_for_issue(GenServer.server(), map()) :: profile() | nil
+  def find_profile_for_issue(server, issue) when is_map(issue) do
+    GenServer.call(server, {:find_profile_for_issue, issue})
+  end
+
   @impl true
   def init(opts) do
     explicit_mongo? = Keyword.has_key?(opts, :mongo_api) or Keyword.has_key?(opts, :topology)
@@ -104,6 +112,11 @@ defmodule SymphonyElixir.BrowserSessionStore do
     end
   end
 
+  def handle_call({:find_profile_for_issue, issue}, _from, state) do
+    {profile, state} = find_profile_by_issue(state, issue)
+    {:reply, profile, state}
+  end
+
   defp load_profile(state, profile_id) do
     cached_profile = Map.get(state.clients, profile_id)
 
@@ -122,6 +135,34 @@ defmodule SymphonyElixir.BrowserSessionStore do
       end
     else
       {cached_profile || default_profile(profile_id), state}
+    end
+  end
+
+  defp find_profile_by_issue(state, issue) do
+    assignee_candidates = issue_assignee_candidates(issue)
+
+    case find_cached_profile_by_assignee(state.clients, assignee_candidates) do
+      nil ->
+        if state.mongo_enabled? and assignee_candidates != [] do
+          case safe_find_profiles(state, assignee_candidates) do
+            [%{} = document | _rest] ->
+              profile_id = document["_id"] || document[:_id] || document["user_id"] || document[:user_id]
+              profile = normalize_profile(document, to_string(profile_id))
+              {profile, %{state | clients: Map.put(state.clients, profile["user_id"], profile)}}
+
+            [] ->
+              {nil, state}
+
+            {:error, reason} ->
+              Logger.warning("Failed to find issue owner profile assignees=#{inspect(assignee_candidates)}: #{inspect(reason)}")
+              {nil, state}
+          end
+        else
+          {nil, state}
+        end
+
+      profile ->
+        {profile, state}
     end
   end
 
@@ -180,6 +221,20 @@ defmodule SymphonyElixir.BrowserSessionStore do
       document,
       upsert: true
     )
+  rescue
+    error ->
+      {:error, {:exception, error}}
+  catch
+    kind, reason ->
+      {:error, {kind, reason}}
+  end
+
+  defp safe_find_profiles(state, assignee_candidates) do
+    query = assignee_query(assignee_candidates)
+
+    state.mongo_api
+    |> apply(:find, [state.topology, state.collection, query, []])
+    |> Enum.take(1)
   rescue
     error ->
       {:error, {:exception, error}}
@@ -268,6 +323,8 @@ defmodule SymphonyElixir.BrowserSessionStore do
   defp normalize_jira({_key, _value}), do: nil
 
   defp normalize_github({"token", value}), do: normalize_string(value)
+  defp normalize_github({"base_url", value}), do: normalize_string(value)
+  defp normalize_github({"api_url", value}), do: normalize_string(value)
   defp normalize_github({"login", value}), do: normalize_string(value)
   defp normalize_github({"name", value}), do: normalize_string(value)
   defp normalize_github({"id", value}), do: normalize_string(value)
@@ -356,6 +413,8 @@ defmodule SymphonyElixir.BrowserSessionStore do
         "token_preview" => token_preview(jira["token"])
       },
       "github" => %{
+        "base_url" => github["base_url"],
+        "api_url" => github["api_url"],
         "login" => github["login"],
         "name" => github["name"],
         "id" => github["id"],
@@ -388,6 +447,64 @@ defmodule SymphonyElixir.BrowserSessionStore do
   end
 
   defp token_preview(_value), do: nil
+
+  defp find_cached_profile_by_assignee(clients, assignee_candidates) do
+    match_values = MapSet.new(assignee_candidates)
+
+    clients
+    |> Map.values()
+    |> Enum.find(fn profile ->
+      profile
+      |> assignee_match_values()
+      |> MapSet.intersection(match_values)
+      |> MapSet.size() > 0
+    end)
+  end
+
+  defp assignee_match_values(profile) when is_map(profile) do
+    jira = Map.get(profile, "jira", %{})
+
+    [
+      jira["account_id"],
+      jira["email"],
+      jira["display_name"]
+    ]
+    |> Enum.map(&normalize_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp issue_assignee_candidates(issue) when is_map(issue) do
+    [
+      issue[:assignee_id],
+      issue["assignee_id"],
+      get_in(issue, [:jira, :account_id]),
+      get_in(issue, ["jira", "account_id"])
+    ]
+    |> Enum.map(&normalize_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp assignee_query([candidate]) do
+    %{
+      "$or" => [
+        %{"jira.account_id" => candidate},
+        %{"jira.email" => candidate},
+        %{"jira.display_name" => candidate}
+      ]
+    }
+  end
+
+  defp assignee_query(candidates) do
+    %{
+      "$or" => [
+        %{"jira.account_id" => %{"$in" => candidates}},
+        %{"jira.email" => %{"$in" => candidates}},
+        %{"jira.display_name" => %{"$in" => candidates}}
+      ]
+    }
+  end
 
   defp stringify_keys(value) when is_map(value) do
     Map.new(value, fn {key, nested_value} -> {to_string(key), stringify_keys(nested_value)} end)

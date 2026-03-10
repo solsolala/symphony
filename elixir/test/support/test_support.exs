@@ -49,6 +49,7 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :mongodb_topology)
           Application.delete_env(:symphony_elixir, :browser_session_store_collection)
           Application.delete_env(:symphony_elixir, :default_jira_base_url)
+          Application.delete_env(:symphony_elixir, :default_github_base_url)
           Application.delete_env(:symphony_elixir, :auth_jira_request_fun)
           Application.delete_env(:symphony_elixir, :auth_github_request_fun)
           File.rm_rf(workflow_root)

@@ -20,7 +20,12 @@ defmodule SymphonyElixir.OrchestratorWorkerPodTest do
             "WORKER_AFFINITY_JSON",
             "WORKER_IMAGE_PULL_SECRETS_JSON",
             "LINEAR_API_KEY",
+            "JIRA_BASE_URL",
             "JIRA_API_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_SERVER_URL",
+            "GITHUB_API_URL",
             "OPENAI_API_KEY"
           ],
           into: %{} do
@@ -38,20 +43,40 @@ defmodule SymphonyElixir.OrchestratorWorkerPodTest do
     System.put_env("WORKFLOW_CONFIGMAP_NAME", "symphony-config")
     System.put_env("WORKFLOW_CONFIGMAP_KEY", "WORKFLOW.md")
     System.put_env("WORKFLOW_FILE_PATH", "/app/WORKFLOW.md")
-    System.put_env("WORKER_INHERIT_ENV", "LINEAR_API_KEY,JIRA_API_TOKEN,OPENAI_API_KEY")
+    System.put_env("WORKER_INHERIT_ENV", "LINEAR_API_KEY,JIRA_BASE_URL,JIRA_API_TOKEN,GITHUB_TOKEN,GH_TOKEN,GITHUB_SERVER_URL,GITHUB_API_URL,OPENAI_API_KEY")
     System.put_env("WORKER_RESOURCES_JSON", ~s({"limits":{"cpu":"1","memory":"1Gi"}}))
     System.put_env("WORKER_NODE_SELECTOR_JSON", ~s({"kubernetes.io/os":"linux"}))
     System.put_env("WORKER_TOLERATIONS_JSON", ~s([{"key":"dedicated","operator":"Exists"}]))
     System.put_env("WORKER_AFFINITY_JSON", ~s({"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{}}}))
     System.put_env("WORKER_IMAGE_PULL_SECRETS_JSON", ~s([{"name":"regcred"}]))
     System.put_env("LINEAR_API_KEY", "linear-token")
+    System.put_env("JIRA_BASE_URL", "https://jira.default.internal")
     System.put_env("JIRA_API_TOKEN", "jira-token")
+    System.put_env("GITHUB_TOKEN", "ghp-default-token")
+    System.put_env("GH_TOKEN", "ghp-default-token")
+    System.put_env("GITHUB_SERVER_URL", "https://github.default.internal")
+    System.put_env("GITHUB_API_URL", "https://github.default.internal/api/v3")
     System.put_env("OPENAI_API_KEY", "openai-token")
+
+    owner_profile = %{
+      "user_id" => "user-owner",
+      "jira" => %{
+        "base_url" => "https://jira.owner.internal",
+        "token" => "jira-owner-token"
+      },
+      "github" => %{
+        "base_url" => "https://github.owner.internal",
+        "api_url" => "https://github.owner.internal/api/v3",
+        "token" => "ghp-owner-token",
+        "login" => "owner-login"
+      }
+    }
 
     manifest =
       Orchestrator.build_worker_pod_manifest_for_test(
         issue,
-        "http://10.0.0.12:4000"
+        "http://10.0.0.12:4000",
+        owner_profile: owner_profile
       )
 
     assert get_in(manifest, ["metadata", "name"]) == "symphony-worker-test"
@@ -83,8 +108,16 @@ defmodule SymphonyElixir.OrchestratorWorkerPodTest do
 
     assert env_by_name["WORKSPACE_ROOT"] == "/tmp/symphony-workspaces"
     assert env_by_name["LINEAR_API_KEY"] == "linear-token"
-    assert env_by_name["JIRA_API_TOKEN"] == "jira-token"
+    assert env_by_name["JIRA_BASE_URL"] == "https://jira.owner.internal"
+    assert env_by_name["JIRA_API_TOKEN"] == "jira-owner-token"
+    assert env_by_name["GITHUB_TOKEN"] == "ghp-owner-token"
+    assert env_by_name["GH_TOKEN"] == "ghp-owner-token"
+    assert env_by_name["GITHUB_SERVER_URL"] == "https://github.owner.internal"
+    assert env_by_name["GITHUB_API_URL"] == "https://github.owner.internal/api/v3"
+    assert env_by_name["GH_HOST"] == "github.owner.internal"
+    assert env_by_name["SYMPHONY_WORKER_USER_ID"] == "user-owner"
     assert env_by_name["OPENAI_API_KEY"] == "openai-token"
+    assert get_in(manifest, ["metadata", "labels", "worker_user_id"]) == "user-owner"
 
     assert get_in(manifest, ["spec", "volumes"]) == [
              %{"configMap" => %{"name" => "symphony-config"}, "name" => "workflow"}

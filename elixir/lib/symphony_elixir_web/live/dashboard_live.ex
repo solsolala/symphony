@@ -22,6 +22,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:authenticated?, is_binary(user_id))
       |> assign(:user_profile, load_user_profile(user_id))
       |> assign(:default_jira_base_url, default_jira_base_url())
+      |> assign(:default_github_base_url, default_github_base_url())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -138,6 +139,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </label>
 
             <label class="detail-stack">
+              <span class="mono">GitHub Base URL</span>
+              <input
+                type="url"
+                name="github_base_url"
+                value={@default_github_base_url || "https://github.com"}
+                placeholder="https://github.company.internal"
+                required
+              />
+            </label>
+
+            <label class="detail-stack">
               <span class="mono">Jira Token</span>
               <input type="password" name="jira_token" autocomplete="off" required />
             </label>
@@ -180,6 +192,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <span class="muted">
               GitHub:
               <%= profile_value(@user_profile, ["github", "login"]) || profile_value(@user_profile, ["github", "name"]) || "n/a" %>
+            </span>
+            <span class="muted">
+              GitHub URL:
+              <%= profile_value(@user_profile, ["github", "base_url"]) || "n/a" %>
             </span>
             <span class="muted">
               Stored GitHub token:
@@ -298,6 +314,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <%= if Map.get(entry, :worker_github_login) || Map.get(entry, :worker_user_id) do %>
+                          <span class="muted">
+                            owner: <%= Map.get(entry, :worker_github_login) || Map.get(entry, :worker_user_id) %>
+                          </span>
+                        <% end %>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                         <button
                           type="button"
@@ -427,6 +448,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp default_jira_base_url do
     Application.get_env(:symphony_elixir, :default_jira_base_url)
+  end
+
+  defp default_github_base_url do
+    Application.get_env(:symphony_elixir, :default_github_base_url)
   end
 
   defp maybe_capture_issue_session(nil, _issue_identifier), do: {:error, :missing_user_id}

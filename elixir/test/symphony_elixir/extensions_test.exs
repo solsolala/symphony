@@ -80,6 +80,45 @@ defmodule SymphonyElixir.ExtensionsTest do
       :ets.insert(table, {{collection, filter["_id"] || filter[:_id]}, replacement})
       {:ok, %{acknowledged: true}}
     end
+
+    def find(table, collection, filter, _opts) do
+      :ets.tab2list(table)
+      |> Enum.filter(fn
+        {{^collection, _id}, document} -> matches_filter?(document, filter)
+        _ -> false
+      end)
+      |> Enum.map(fn {{^collection, _id}, document} -> document end)
+    end
+
+    defp matches_filter?(document, %{"$or" => clauses}) when is_list(clauses) do
+      Enum.any?(clauses, &matches_filter?(document, &1))
+    end
+
+    defp matches_filter?(document, %{"jira.account_id" => value}) when is_binary(value) do
+      get_in(document, ["jira", "account_id"]) == value
+    end
+
+    defp matches_filter?(document, %{"jira.account_id" => %{"$in" => values}}) do
+      get_in(document, ["jira", "account_id"]) in values
+    end
+
+    defp matches_filter?(document, %{"jira.email" => value}) when is_binary(value) do
+      get_in(document, ["jira", "email"]) == value
+    end
+
+    defp matches_filter?(document, %{"jira.email" => %{"$in" => values}}) do
+      get_in(document, ["jira", "email"]) in values
+    end
+
+    defp matches_filter?(document, %{"jira.display_name" => value}) when is_binary(value) do
+      get_in(document, ["jira", "display_name"]) == value
+    end
+
+    defp matches_filter?(document, %{"jira.display_name" => %{"$in" => values}}) do
+      get_in(document, ["jira", "display_name"]) in values
+    end
+
+    defp matches_filter?(_document, _filter), do: false
   end
 
   defmodule SlowOrchestrator do
@@ -520,6 +559,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       build_conn()
       |> post("/login", %{
         "jira_base_url" => "https://jira.company.internal",
+        "github_base_url" => "https://github.company.internal",
         "jira_token" => "jira-secret-token",
         "github_token" => "ghp_secret-token"
       })
@@ -527,7 +567,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert redirected_to(conn) == "/"
     assert get_session(conn, :user_id) =~ "user-"
     assert_receive {:auth_jira_request, :get, "https://jira.company.internal/rest/api/2/myself"}
-    assert_receive {:auth_github_request, :get, "https://api.github.com/user"}
+    assert_receive {:auth_github_request, :get, "https://github.company.internal/api/v3/user"}
 
     session_body =
       conn
@@ -538,6 +578,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert session_body["profile"]["user_id"] == session_body["user_id"]
     assert session_body["profile"]["jira"]["base_url"] == "https://jira.company.internal"
     assert session_body["profile"]["jira"]["display_name"] == "Jira User"
+    assert session_body["profile"]["github"]["base_url"] == "https://github.company.internal"
     assert session_body["profile"]["github"]["login"] == "octocat"
     assert session_body["profile"]["github"]["has_token"]
 
