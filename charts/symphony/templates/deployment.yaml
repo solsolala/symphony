@@ -77,6 +77,10 @@ spec:
               value: {{ toJson .Values.worker.affinity | quote }}
             - name: WORKER_IMAGE_PULL_SECRETS_JSON
               value: {{ toJson .Values.imagePullSecrets | quote }}
+            - name: SYMPHONY_BROWSER_SESSION_COLLECTION
+              value: {{ .Values.mongo.collection | quote }}
+            - name: MONGODB_POOL_SIZE
+              value: {{ .Values.mongo.poolSize | quote }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

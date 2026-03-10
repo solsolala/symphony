@@ -3,9 +3,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
+  import Plug.Conn
 
-  alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Jira.Adapter, as: JiraAdapter
+  alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -64,6 +65,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     def update_issue_state(issue_id, state_name) do
       send(self(), {:jira_update_issue_state_called, issue_id, state_name})
       :ok
+    end
+  end
+
+  defmodule FakeMongoApi do
+    def find_one(table, collection, filter, _opts) do
+      case :ets.lookup(table, {collection, filter["_id"] || filter[:_id]}) do
+        [{{^collection, _id}, document}] -> document
+        [] -> nil
+      end
+    end
+
+    def replace_one(table, collection, filter, replacement, _opts) do
+      :ets.insert(table, {{collection, filter["_id"] || filter[:_id]}, replacement})
+      {:ok, %{acknowledged: true}}
     end
   end
 
@@ -128,9 +143,16 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     endpoint_config = Application.get_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, [])
+    browser_session_store = Application.get_env(:symphony_elixir, :browser_session_store)
 
     on_exit(fn ->
       Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
+
+      if is_nil(browser_session_store) do
+        Application.delete_env(:symphony_elixir, :browser_session_store)
+      else
+        Application.put_env(:symphony_elixir, :browser_session_store, browser_session_store)
+      end
     end)
 
     :ok
@@ -376,6 +398,153 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:jira_update_issue_state_called, "issue-1", "Done"}
   end
 
+  test "client session api persists authenticated user metadata and remembered sessions" do
+    store_name = Module.concat(__MODULE__, BrowserSessionStore)
+    Application.put_env(:symphony_elixir, :browser_session_store, store_name)
+    mongo_table = :ets.new(__MODULE__, [:set, :public])
+    store_opts = [name: store_name, mongo_api: FakeMongoApi, topology: mongo_table, collection: "browser_sessions"]
+
+    start_supervised!({SymphonyElixir.BrowserSessionStore, store_opts})
+
+    snapshot = static_snapshot()
+    orchestrator_name = Module.concat(__MODULE__, :ClientSessionApiOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: snapshot,
+        refresh: :unavailable
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    conn =
+      build_conn()
+      |> init_test_session(%{user_id: "user-123"})
+      |> get("/api/v1/session")
+
+    body = json_response(conn, 200)
+    client_id = body["client_id"]
+    assert body["user_id"] == "user-123"
+
+    assert is_binary(client_id)
+    refute body["profile"]["jira"]["has_token"]
+    refute body["profile"]["github"]["has_token"]
+
+    conn =
+      conn
+      |> recycle()
+      |> put_req_header("content-type", "application/json")
+      |> put("/api/v1/session", %{
+        jira: %{base_url: "https://jira.company.internal", token: "secret-token"},
+        github: %{token: "ghp_secret-token", login: "octocat"},
+        repository: %{clone_url: "https://github.com/example/repo.git", ref: "main"}
+      })
+
+    updated = json_response(conn, 200)
+    assert updated["client_id"] == client_id
+    assert updated["user_id"] == "user-123"
+    assert updated["profile"]["jira"]["base_url"] == "https://jira.company.internal"
+    assert updated["profile"]["jira"]["has_token"]
+    assert updated["profile"]["github"]["has_token"]
+    assert updated["profile"]["github"]["login"] == "octocat"
+    assert updated["profile"]["repository"]["clone_url"] == "https://github.com/example/repo.git"
+
+    conn =
+      conn
+      |> recycle()
+      |> post("/api/v1/session/issues/MT-HTTP/capture", %{})
+
+    captured = json_response(conn, 200)
+
+    assert [%{"issue_identifier" => "MT-HTTP", "session_id" => "thread-http"} | _] =
+             captured["profile"]["recent_sessions"]
+
+    conn = recycle(conn)
+    fetched_again = json_response(get(conn, "/api/v1/session"), 200)
+    assert fetched_again["client_id"] == client_id
+    assert fetched_again["user_id"] == "user-123"
+    assert fetched_again["profile"]["recent_sessions"] |> Enum.map(& &1["issue_identifier"]) == ["MT-HTTP"]
+
+    missing =
+      conn
+      |> recycle()
+      |> post("/api/v1/session/issues/MT-MISSING/capture", %{})
+      |> json_response(404)
+
+    assert missing == %{"error" => %{"code" => "issue_not_found", "message" => "Issue not found"}}
+  end
+
+  test "token login verifies jira and github identities and persists an authenticated user session" do
+    store_name = Module.concat(__MODULE__, LoginBrowserSessionStore)
+    Application.put_env(:symphony_elixir, :browser_session_store, store_name)
+    Application.put_env(:symphony_elixir, :default_jira_base_url, "https://jira.company.internal")
+    mongo_table = :ets.new(:login_browser_sessions, [:set, :public])
+    store_opts = [name: store_name, mongo_api: FakeMongoApi, topology: mongo_table, collection: "browser_sessions"]
+
+    start_supervised!({SymphonyElixir.BrowserSessionStore, store_opts})
+
+    Application.put_env(:symphony_elixir, :auth_jira_request_fun, fn req ->
+      send(self(), {:auth_jira_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "accountId" => "jira-user-1",
+           "displayName" => "Jira User",
+           "emailAddress" => "jira@example.com"
+         }
+       }}
+    end)
+
+    Application.put_env(:symphony_elixir, :auth_github_request_fun, fn req ->
+      send(self(), {:auth_github_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "id" => 123,
+           "login" => "octocat",
+           "name" => "The Octocat",
+           "html_url" => "https://github.com/octocat",
+           "avatar_url" => "https://avatars.githubusercontent.com/u/123?v=4"
+         }
+       }}
+    end)
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :LoginOrchestrator), snapshot_timeout_ms: 50)
+
+    conn =
+      build_conn()
+      |> post("/login", %{
+        "jira_base_url" => "https://jira.company.internal",
+        "jira_token" => "jira-secret-token",
+        "github_token" => "ghp_secret-token"
+      })
+
+    assert redirected_to(conn) == "/"
+    assert get_session(conn, :user_id) =~ "user-"
+    assert_receive {:auth_jira_request, :get, "https://jira.company.internal/rest/api/2/myself"}
+    assert_receive {:auth_github_request, :get, "https://api.github.com/user"}
+
+    session_body =
+      conn
+      |> recycle()
+      |> get("/api/v1/session")
+      |> json_response(200)
+
+    assert session_body["profile"]["user_id"] == session_body["user_id"]
+    assert session_body["profile"]["jira"]["base_url"] == "https://jira.company.internal"
+    assert session_body["profile"]["jira"]["display_name"] == "Jira User"
+    assert session_body["profile"]["github"]["login"] == "octocat"
+    assert session_body["profile"]["github"]["has_token"]
+
+    assert %{"jira" => %{"token" => "jira-secret-token"}, "github" => %{"token" => "ghp_secret-token"}} =
+             FakeMongoApi.find_one(mongo_table, "browser_sessions", %{"_id" => session_body["user_id"]}, [])
+  end
+
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
@@ -406,6 +575,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
                  "session_id" => "thread-http",
+                 "thread_id" => nil,
+                 "turn_id" => nil,
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
@@ -443,6 +614,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
              "running" => %{
                "session_id" => "thread-http",
+               "thread_id" => nil,
+               "turn_id" => nil,
                "turn_count" => 7,
                "state" => "In Progress",
                "started_at" => issue_payload["running"]["started_at"],
@@ -586,7 +759,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(authenticated_conn(), "/")
     assert html =~ "Operations Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
@@ -650,7 +823,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, _view, html} = live(authenticated_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
   end
@@ -729,6 +902,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     Application.put_env(:symphony_elixir, SymphonyElixirWeb.Endpoint, endpoint_config)
     start_supervised!({SymphonyElixirWeb.Endpoint, []})
+  end
+
+  defp authenticated_conn(user_id \\ "user-test") do
+    build_conn()
+    |> init_test_session(%{user_id: user_id})
   end
 
   defp static_snapshot do

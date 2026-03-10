@@ -10,6 +10,9 @@ This chart runs one Symphony orchestrator pod and lets that orchestrator create 
 - `codex.command` controls how worker pods launch Codex. The default is `codex app-server`.
 - `env` injects runtime credentials into the orchestrator pod.
 - `worker.inheritEnv` controls which env vars worker pods receive from the orchestrator pod.
+- `mongo.*` controls how per-user Jira/GitHub/Codex session metadata is stored in MongoDB.
+
+The dashboard login now requires both a Jira token and a GitHub token. Users enter those tokens in the UI, Symphony verifies them, and the verified profile is stored in MongoDB under a stable `user_id`.
 
 Real Codex turns need `OPENAI_API_KEY` in `env` so the worker pod inherits it before launching `codex app-server`.
 
@@ -20,6 +23,8 @@ Real Codex turns need `OPENAI_API_KEY` in `env` so the worker pod inherits it be
 - A pushed Symphony image built from `/Users/chee_mac/symphony/Dockerfile`
 - `OPENAI_API_KEY`
 - `JIRA_API_TOKEN`
+- `MONGODB_URI`
+- Optional: `SYMPHONY_DEFAULT_JIRA_BASE_URL`
 
 ## 1. Build And Push The Image
 
@@ -40,9 +45,14 @@ kubectl -n symphony create secret generic symphony-openai \
 
 kubectl -n symphony create secret generic symphony-jira \
   --from-literal=api-key="$JIRA_API_TOKEN"
+
+kubectl -n symphony create secret generic symphony-mongo \
+  --from-literal=uri="$MONGODB_URI"
 ```
 
 Each deployed Symphony instance uses the Jira token you inject here. The token is not baked into the image or chart.
+
+If every user should log into the dashboard against the same Jira server, also set `SYMPHONY_DEFAULT_JIRA_BASE_URL` in the deployment env. That prefills the login form for internal Jira deployments.
 
 If you pull from a private registry, create an image pull secret too and reference it from `imagePullSecrets`.
 
@@ -76,9 +86,15 @@ runtimeServer:
   host: "0.0.0.0"
   port: 4000
 
+mongo:
+  collection: user_sessions
+  poolSize: 5
+
 env:
   - name: PORT
     value: "4000"
+  - name: SYMPHONY_DEFAULT_JIRA_BASE_URL
+    value: https://jira.company.internal
   - name: JIRA_API_TOKEN
     valueFrom:
       secretKeyRef:
@@ -89,14 +105,25 @@ env:
       secretKeyRef:
         name: symphony-openai
         key: api-key
+  - name: MONGODB_URI
+    valueFrom:
+      secretKeyRef:
+        name: symphony-mongo
+        key: uri
 ```
 
 Notes:
 
 - `tracker.endpoint` should point at your Jira base URL. For Jira Cloud that is typically `https://your-domain.atlassian.net`; for internal Jira it can be something like `https://jira.company.internal`.
+- `SYMPHONY_DEFAULT_JIRA_BASE_URL` pre-populates the browser login form with the Jira base URL users should authenticate against.
+- Dashboard access requires both a Jira token and a GitHub token per user. Those user-level tokens are stored in MongoDB after verification.
+- The orchestrator's tracker polling path is still driven by `tracker.*` plus deployment env like `JIRA_API_TOKEN`; the per-user login credentials are currently used for dashboard identity and remembered session persistence.
 - `worker.inheritEnv` already includes `JIRA_API_TOKEN`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_ORG_ID`.
 - If you change `tracker.apiKeyEnv`, make sure the matching env var is present in `env`.
 - If workers need extra credentials, add the env var to both `env` and `worker.inheritEnv`.
+- `MONGODB_URI` should include the database name Symphony will use for user-scoped session persistence.
+- `mongo.collection` defaults to `user_sessions`.
+- User-specific Jira/GitHub/Codex session metadata is now persisted in MongoDB instead of local disk.
 
 ## 4. Install Or Upgrade
 
@@ -121,6 +148,7 @@ Check the dashboard and JSON API:
 ```bash
 kubectl -n symphony port-forward deploy/symphony 4000:4000
 curl http://127.0.0.1:4000/api/v1/state
+curl http://127.0.0.1:4000/api/v1/session
 ```
 
 Worker pods appear only when the Jira tracker returns an active issue:

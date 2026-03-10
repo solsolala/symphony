@@ -69,9 +69,16 @@ runtimeServer:
   host: "0.0.0.0"
   port: 4000
 
+mongo:
+  collection: "user_sessions"
+  poolSize: 5
+
 env:
   - name: PORT
     value: "4000"
+  - name: SYMPHONY_DEFAULT_JIRA_BASE_URL
+    value: ""
+    # Optional. Prefills the login form with your Jira Cloud or internal Jira base URL.
   - name: JIRA_API_TOKEN
     value: ""
     # Or point tracker.apiKeyEnv at another env var.
@@ -83,6 +90,10 @@ env:
   - name: OPENAI_API_KEY
     value: ""
     # Worker pods inherit OPENAI_API_KEY by default and need it for real Codex turns.
+    # Prefer loading from a secret in non-local environments.
+  - name: MONGODB_URI
+    value: ""
+    # User-scoped Jira/GitHub/Codex session metadata is persisted to MongoDB.
     # Prefer loading from a secret in non-local environments.
 
 workspaceRoot: "/app/workspaces"

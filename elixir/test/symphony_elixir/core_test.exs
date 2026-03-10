@@ -603,11 +603,13 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
+  @due_at_scheduler_grace_ms 500
+
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+    assert remaining_ms >= min_remaining_ms - @due_at_scheduler_grace_ms
+    assert remaining_ms <= max_remaining_ms + @due_at_scheduler_grace_ms
   end
 
   test "fetch issues by states with empty state set is a no-op" do

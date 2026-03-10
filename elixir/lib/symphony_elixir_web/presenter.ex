@@ -100,6 +100,8 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       state: entry.state,
       session_id: entry.session_id,
+      thread_id: Map.get(entry, :thread_id),
+      turn_id: Map.get(entry, :turn_id),
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
@@ -126,6 +128,8 @@ defmodule SymphonyElixirWeb.Presenter do
   defp running_issue_payload(running) do
     %{
       session_id: running.session_id,
+      thread_id: Map.get(running, :thread_id),
+      turn_id: Map.get(running, :turn_id),
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
       started_at: iso8601(running.started_at),

@@ -5,14 +5,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.BrowserSessionStore
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    client_id = session["client_id"]
+    user_id = session["user_id"]
+
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:client_id, client_id)
+      |> assign(:user_id, user_id)
+      |> assign(:authenticated?, is_binary(user_id))
+      |> assign(:user_profile, load_user_profile(user_id))
+      |> assign(:default_jira_base_url, default_jira_base_url())
       |> assign(:now, DateTime.utc_now())
 
     if connected?(socket) do
@@ -34,7 +43,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
+     |> assign(:user_profile, load_user_profile(socket.assigns.user_id))
      |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_event("remember_session", %{"issue_identifier" => issue_identifier}, socket) do
+    socket =
+      case maybe_capture_issue_session(socket.assigns.user_id, issue_identifier) do
+        {:ok, profile} ->
+          assign(socket, :user_profile, profile)
+
+        {:error, _reason} ->
+          socket
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -68,6 +92,67 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </div>
       </header>
 
+      <%= if @flash["error"] do %>
+        <section class="error-card">
+          <h2 class="error-title">
+            Login failed
+          </h2>
+          <p class="error-copy"><%= @flash["error"] %></p>
+        </section>
+      <% end %>
+
+      <%= if @flash["info"] do %>
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Status</h2>
+            </div>
+          </div>
+          <p class="section-copy"><%= @flash["info"] %></p>
+        </section>
+      <% end %>
+
+      <%= if not @authenticated? do %>
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Token Login</h2>
+              <p class="section-copy">
+                Enter both tokens to open the Symphony dashboard. The Jira URL can be prefilled from deployment settings and the verified credentials are stored in MongoDB for this Symphony user profile.
+              </p>
+            </div>
+          </div>
+
+          <form method="post" action="/login" class="detail-stack">
+            <input type="hidden" name="_csrf_token" value={Plug.CSRFProtection.get_csrf_token()} />
+
+            <label class="detail-stack">
+              <span class="mono">Jira Base URL</span>
+              <input
+                type="url"
+                name="jira_base_url"
+                value={@default_jira_base_url || ""}
+                placeholder="https://jira.company.internal"
+                required
+              />
+            </label>
+
+            <label class="detail-stack">
+              <span class="mono">Jira Token</span>
+              <input type="password" name="jira_token" autocomplete="off" required />
+            </label>
+
+            <label class="detail-stack">
+              <span class="mono">GitHub Token</span>
+              <input type="password" name="github_token" autocomplete="off" required />
+            </label>
+
+            <div class="issue-stack">
+              <button type="submit" class="subtle-button">Sign In</button>
+            </div>
+          </form>
+        </section>
+      <% else %>
       <%= if @payload[:error] do %>
         <section class="error-card">
           <h2 class="error-title">
@@ -78,6 +163,66 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </p>
         </section>
       <% else %>
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Operator Profile</h2>
+              <p class="section-copy">Per-user Jira, GitHub, repository settings, and remembered Codex sessions stored on this Symphony server.</p>
+            </div>
+            <form method="post" action="/logout">
+              <input type="hidden" name="_csrf_token" value={Plug.CSRFProtection.get_csrf_token()} />
+              <button type="submit" class="subtle-button">Sign Out</button>
+            </form>
+          </div>
+
+          <div class="detail-stack">
+            <span class="mono">User ID: <%= @user_id || "n/a" %></span>
+            <span class="muted">
+              GitHub:
+              <%= profile_value(@user_profile, ["github", "login"]) || profile_value(@user_profile, ["github", "name"]) || "n/a" %>
+            </span>
+            <span class="muted">
+              Stored GitHub token:
+              <%= token_status(@user_profile, "github") %>
+            </span>
+            <span class="muted">
+              Jira URL:
+              <%= profile_value(@user_profile, ["jira", "base_url"]) || "n/a" %>
+            </span>
+            <span class="muted">
+              Stored Jira token:
+              <%= token_status(@user_profile, "jira") %>
+            </span>
+          </div>
+
+          <%= if recent_sessions(@user_profile) == [] do %>
+            <p class="empty-state">No remembered sessions for this user yet.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 760px;">
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Session</th>
+                    <th>Thread</th>
+                    <th>Workspace</th>
+                    <th>Captured at</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- recent_sessions(@user_profile)}>
+                    <td><%= entry["issue_identifier"] || "n/a" %></td>
+                    <td class="mono"><%= entry["session_id"] || "n/a" %></td>
+                    <td class="mono"><%= entry["thread_id"] || "n/a" %></td>
+                    <td class="mono"><%= entry["workspace_path"] || "n/a" %></td>
+                    <td class="mono"><%= entry["captured_at"] || "n/a" %></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
         <section class="metric-grid">
           <article class="metric-card">
             <p class="metric-label">Running</p>
@@ -154,6 +299,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <button
+                          type="button"
+                          class="subtle-button"
+                          phx-click="remember_session"
+                          phx-value-issue_identifier={entry.issue_identifier}
+                        >
+                          Remember
+                        </button>
                       </div>
                     </td>
                     <td>
@@ -245,6 +398,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <% end %>
         </section>
       <% end %>
+      <% end %>
     </section>
     """
   end
@@ -253,13 +407,49 @@ defmodule SymphonyElixirWeb.DashboardLive do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
+  defp load_user_profile(nil), do: nil
+
+  defp load_user_profile(user_id) when is_binary(user_id) do
+    BrowserSessionStore.fetch_profile(browser_session_store(), user_id)
+  end
+
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  end
+
+  defp browser_session_store do
+    Application.get_env(:symphony_elixir, :browser_session_store, BrowserSessionStore)
   end
 
   defp snapshot_timeout_ms do
     Endpoint.config(:snapshot_timeout_ms) || 15_000
   end
+
+  defp default_jira_base_url do
+    Application.get_env(:symphony_elixir, :default_jira_base_url)
+  end
+
+  defp maybe_capture_issue_session(nil, _issue_identifier), do: {:error, :missing_user_id}
+
+  defp maybe_capture_issue_session(user_id, issue_identifier) do
+    with {:ok, payload} <- Presenter.issue_payload(issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      BrowserSessionStore.capture_issue(browser_session_store(), user_id, payload)
+    end
+  end
+
+  defp profile_value(nil, _path), do: nil
+  defp profile_value(profile, path), do: get_in(profile, path)
+
+  defp token_status(profile, provider) do
+    if profile_value(profile, [provider, "has_token"]) do
+      profile_value(profile, [provider, "token_preview"]) || "stored"
+    else
+      "not stored"
+    end
+  end
+
+  defp recent_sessions(nil), do: []
+  defp recent_sessions(profile), do: Map.get(profile, "recent_sessions", [])
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0

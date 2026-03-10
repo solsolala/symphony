@@ -8,10 +8,18 @@ defmodule SymphonyElixirWeb.Router do
 
   pipeline :browser do
     plug(:fetch_session)
+    plug(SymphonyElixirWeb.ClientSessionPlug)
+    plug(SymphonyElixirWeb.CurrentUserPlug)
     plug(:fetch_live_flash)
     plug(:put_root_layout, html: {SymphonyElixirWeb.Layouts, :root})
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
+  end
+
+  pipeline :client_session_api do
+    plug(:fetch_session)
+    plug(SymphonyElixirWeb.ClientSessionPlug)
+    plug(SymphonyElixirWeb.CurrentUserPlug)
   end
 
   scope "/", SymphonyElixirWeb do
@@ -25,6 +33,18 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    post("/login", AuthController, :create)
+    post("/logout", AuthController, :delete)
+  end
+
+  scope "/", SymphonyElixirWeb do
+    pipe_through(:client_session_api)
+
+    get("/api/v1/session", ClientSessionController, :show)
+    put("/api/v1/session", ClientSessionController, :update)
+    post("/api/v1/session/issues/:issue_identifier/capture", ClientSessionController, :capture_issue)
+    match(:*, "/api/v1/session", ObservabilityApiController, :method_not_allowed)
+    match(:*, "/api/v1/session/issues/:issue_identifier/capture", ObservabilityApiController, :method_not_allowed)
   end
 
   scope "/", SymphonyElixirWeb do
