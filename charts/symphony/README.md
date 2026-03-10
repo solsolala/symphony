@@ -2,6 +2,21 @@
 
 This chart runs one Symphony orchestrator pod and lets that orchestrator create one worker pod per ticket.
 
+## How This Fork Differs From The OpenAI Reference Repo
+
+This chart documents behavior that is specific to this fork, not to the
+original OpenAI reference repo:
+
+- The dashboard at `/` is also a login page.
+- Each user logs in with both Jira and GitHub tokens.
+- Jira Cloud and internal Jira URLs are supported.
+- GitHub Cloud and GitHub Enterprise URLs are supported.
+- User profile metadata and remembered Codex session metadata are persisted in
+  MongoDB.
+- Worker pods can receive per-user Jira and GitHub credentials when the Jira
+  assignee matches a stored user profile.
+- Kubernetes deployment is treated as the primary production path.
+
 ## What This Chart Configures
 
 - `tracker.*` selects the ticket source.
@@ -15,6 +30,32 @@ This chart runs one Symphony orchestrator pod and lets that orchestrator create 
 The dashboard login now requires both a Jira token and a GitHub token. Users enter those tokens in the UI, Symphony verifies them, and the verified profile is stored in MongoDB under a stable `user_id`.
 
 Real Codex turns need `OPENAI_API_KEY` in `env` so the worker pod inherits it before launching `codex app-server`.
+
+## Login And Permission Model
+
+There are two credential scopes in this fork:
+
+1. Deployment-level credentials
+   - used by the orchestrator for tracker polling and service startup
+   - examples: `JIRA_API_TOKEN`, `JIRA_BASE_URL`, `OPENAI_API_KEY`
+2. User-level credentials
+   - entered on the dashboard login page
+   - require both Jira and GitHub or GitHub Enterprise tokens
+   - persisted in MongoDB together with the user's selected server URLs
+
+Worker pod credential selection works like this:
+
+- Symphony checks the Jira assignee on the issue.
+- If that assignee matches a stored logged-in user profile, the worker pod gets
+  that user's Jira and GitHub credentials.
+- If there is no match, the worker pod falls back to deployment-level env vars.
+
+Important limitation:
+- The orchestrator's tracker polling path is still driven by deployment-level
+  `tracker.*` settings and env vars.
+- User login credentials currently control dashboard identity, remembered
+  sessions, and worker-pod credential injection. They do not yet replace the
+  deployment-level Jira polling identity.
 
 ## Prerequisites
 
@@ -176,6 +217,14 @@ kubectl -n symphony port-forward deploy/symphony 4000:4000
 curl http://127.0.0.1:4000/api/v1/state
 curl http://127.0.0.1:4000/api/v1/session
 ```
+
+When you open `http://127.0.0.1:4000/`, the first page should be the login form.
+In this fork, that is expected behavior. Users must sign in with:
+
+- Jira base URL
+- Jira token
+- GitHub or GitHub Enterprise base URL
+- GitHub token
 
 Worker pods appear only when the Jira tracker returns an active issue:
 

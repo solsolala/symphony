@@ -7,42 +7,72 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
 
+> [!NOTE]
+> This fork diverges from the OpenAI reference implementation in a few major
+> ways: it is Jira-first, includes a user login page for Jira and GitHub
+> credentials, persists user session state in MongoDB, and is designed to run
+> well in Kubernetes where each ticket can execute in its own worker pod.
+
 ## Screenshot
 
 ![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
 
 ## How it works
 
-1. Polls Linear for candidate work
-2. Creates an isolated workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
-
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+1. Polls Jira or another configured tracker for candidate work
+2. Optionally serves a Phoenix dashboard at `/`
+3. Requires each dashboard user to log in with:
+   - Jira base URL + Jira token
+   - GitHub or GitHub Enterprise base URL + GitHub token
+4. Persists remembered Codex session metadata and operator profile metadata in
+   MongoDB
+5. Creates an isolated workspace per issue
+6. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/)
+   inside the issue workspace or inside a Kubernetes worker pod
+7. Keeps Codex working on the issue until the work is done
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
+
+## What Changed Compared To The OpenAI Reference Repo
+
+- The default operator workflow is Jira-centered rather than Linear-centered.
+- The web UI is not just an observability page anymore; it is also a login page
+  for user-scoped Jira and GitHub credentials.
+- User profile metadata and remembered Codex sessions are persisted in MongoDB
+  instead of browser-only or local-disk state.
+- Kubernetes is a first-class deployment target. The orchestrator pod can spawn
+  one worker pod per ticket.
+- Worker pods can inherit user-scoped Jira and GitHub credentials based on Jira
+  assignee matching.
+- Internal Jira and GitHub Enterprise URLs are configurable through both
+  deployment env vars and the login page.
+
+Current limitation:
+- Tracker polling is still driven by deployment-level config such as
+  `tracker.endpoint`, `JIRA_API_TOKEN`, and workflow settings.
+- User login credentials currently affect dashboard identity, remembered Codex
+  sessions, and worker-pod runtime credentials. They do not yet replace the
+  deployment-level tracker polling identity.
 
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
+2. Decide whether you are running:
+   - locally or on a single host
+   - in Kubernetes using the chart in
+     [charts/symphony/README.md](/Users/chee_mac/symphony/charts/symphony/README.md)
+3. Copy this directory's `WORKFLOW.md` to your repo and customize it.
+4. For Jira-based runs, prepare:
+   - a deployment-level Jira token for tracker polling
+   - a Jira base URL for your Jira Cloud or internal Jira server
+5. If you will use the dashboard login flow, each user also needs:
+   - a personal Jira token
+   - a personal GitHub or GitHub Enterprise token
+6. If you want the dashboard and session APIs, start Symphony with `--port`.
+7. If you want Kubernetes worker pods, follow the chart guide instead of only
+   using the local runtime instructions below.
 
 ## Prerequisites
 
@@ -88,13 +118,15 @@ Minimal example:
 ```md
 ---
 tracker:
-  kind: linear
-  project_slug: "..."
+  kind: jira
+  endpoint: https://jira.company.internal
+  api_key: $JIRA_API_TOKEN
+  project_slug: "PLATFORM"
 workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    git clone --depth 1 https://github.company.internal/your-org/your-repo.git .
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -102,7 +134,7 @@ codex:
   command: codex app-server
 ---
 
-You are working on a Linear issue {{ issue.identifier }}.
+You are working on a Jira issue {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -126,7 +158,10 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.api_key` reads from `JIRA_API_TOKEN` when unset or when value is
+  `$JIRA_API_TOKEN`.
+- `tracker.endpoint` can point at Jira Cloud or an internal Jira server.
+- `JIRA_BASE_URL` is used as a runtime override for Jira endpoint resolution.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -134,7 +169,8 @@ Notes:
 
 ```yaml
 tracker:
-  api_key: $LINEAR_API_KEY
+  endpoint: $JIRA_BASE_URL
+  api_key: $JIRA_API_TOKEN
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
@@ -150,12 +186,53 @@ codex:
 
 ## Web dashboard
 
-The observability UI now runs on a minimal Phoenix stack:
+The observability UI now runs on a minimal Phoenix stack and also acts as the
+operator login page:
 
-- LiveView for the dashboard at `/`
+- LiveView for the dashboard and login page at `/`
+- Login requires:
+  - Jira base URL
+  - Jira token
+  - GitHub or GitHub Enterprise base URL
+  - GitHub token
 - JSON API for operational debugging under `/api/v1/*`
+- MongoDB-backed persistence for user profile metadata and remembered Codex
+  sessions
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+
+`/api/v1/session` is intended for authenticated dashboard users. It returns the
+current user profile and remembered session state after login.
+
+## Permission Model
+
+This fork has two credential layers:
+
+1. Deployment-level credentials
+   - used by tracker polling and general service startup
+   - examples: `JIRA_API_TOKEN`, `JIRA_BASE_URL`, `OPENAI_API_KEY`
+2. User-level credentials from the login page
+   - used for dashboard identity and remembered session persistence
+   - passed to worker pods when the issue assignee matches a stored Jira user
+   - include Jira and GitHub or GitHub Enterprise base URLs and tokens
+
+Worker pod behavior:
+
+- If a running issue's Jira assignee matches a stored user profile, the worker
+  pod receives that user's `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `GITHUB_TOKEN`,
+  `GH_TOKEN`, `GITHUB_SERVER_URL`, and `GITHUB_API_URL`.
+- If no user match is found, the worker falls back to deployment-level env vars.
+
+## Kubernetes
+
+For Kubernetes deployment, do not rely on this file alone. Use
+[charts/symphony/README.md](/Users/chee_mac/symphony/charts/symphony/README.md)
+for:
+
+- worker-pod image and env wiring
+- MongoDB setup
+- login-page defaults for internal Jira and GitHub servers
+- Helm values for Jira polling and private repository clone behavior
 
 ## Project Layout
 

@@ -3,36 +3,67 @@
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
 work instead of supervising coding agents.
 
+This repository is a Jira-first, Kubernetes-oriented fork of the OpenAI
+reference Symphony repo. The main additions in this fork are a user login page,
+MongoDB-backed user session storage, Jira and GitHub Enterprise support, and
+worker-pod credential injection for per-ticket Codex runs.
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 
-_In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
+_The original demo in [this video](.github/media/symphony-demo.mp4) shows the
+OpenAI reference flow around Linear. This fork keeps the same high-level idea,
+but the implementation here is centered on Jira, GitHub, Kubernetes worker
+pods, and an authenticated dashboard._
 
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
+## What Changed In This Fork
+
+- Jira-first tracker support and deployment guidance instead of Linear-first
+  local setup.
+- A Phoenix login page at `/` where each operator enters:
+  - Jira base URL + Jira token
+  - GitHub or GitHub Enterprise base URL + GitHub token
+- MongoDB-backed user session persistence for remembered Codex sessions and
+  operator profile metadata.
+- Kubernetes deployment flow where one orchestrator pod creates one worker pod
+  per ticket.
+- Worker pods can receive user-scoped Jira and GitHub credentials when the Jira
+  assignee matches a stored operator profile.
+- Internal Jira and GitHub Enterprise URLs are configurable both in the login
+  UI and in Kubernetes deployment values.
+
+Current caveat:
+- The orchestrator's tracker polling path is still driven by deployment-level
+  config such as `tracker.*`, `JIRA_API_TOKEN`, and `tracker.endpoint`.
+- Per-user login credentials are currently used for dashboard identity,
+  remembered Codex sessions, and worker-pod credential injection when assignee
+  matching succeeds.
+
+## Docs In This Fork
+
+- [elixir/README.md](/Users/chee_mac/symphony/elixir/README.md)
+  Local runtime details, dashboard behavior, config model, and permission model
+- [charts/symphony/README.md](/Users/chee_mac/symphony/charts/symphony/README.md)
+  Kubernetes deployment guide, login flow, secrets, Jira/GitHub Enterprise
+  settings, and worker-pod credential propagation
+- [SPEC.md](/Users/chee_mac/symphony/SPEC.md)
+  Original Symphony spec
+- [openai/symphony](https://github.com/openai/symphony)
+  Upstream reference repository
+
 ## Running Symphony
 
-### Requirements
-
 Symphony works best in codebases that have adopted
-[harness engineering](https://openai.com/index/harness-engineering/). Symphony is the next step --
-moving from managing coding agents to managing work that needs to get done.
+[harness engineering](https://openai.com/index/harness-engineering/).
 
-### Option 1. Make your own
+Two practical entry points in this fork are:
 
-Tell your favorite coding agent to build Symphony in a programming language of your choice:
-
-> Implement Symphony according to the following spec:
-> https://github.com/openai/symphony/blob/main/SPEC.md
-
-### Option 2. Use our experimental reference implementation
-
-Check out [elixir/README.md](elixir/README.md) for instructions on how to set up your environment
-and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
-help with the setup:
-
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+- Local/runtime evaluation:
+  See [elixir/README.md](/Users/chee_mac/symphony/elixir/README.md)
+- Kubernetes deployment:
+  See [charts/symphony/README.md](/Users/chee_mac/symphony/charts/symphony/README.md)
 
 ---
 
