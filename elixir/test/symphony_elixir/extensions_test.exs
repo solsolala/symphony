@@ -586,6 +586,138 @@ defmodule SymphonyElixir.ExtensionsTest do
              FakeMongoApi.find_one(mongo_table, "browser_sessions", %{"_id" => session_body["user_id"]}, [])
   end
 
+  test "token login uses deployment defaults when base urls are left blank" do
+    store_name = Module.concat(__MODULE__, DefaultLoginBrowserSessionStore)
+    Application.put_env(:symphony_elixir, :browser_session_store, store_name)
+    Application.put_env(:symphony_elixir, :default_jira_base_url, "https://jira.default.internal")
+    Application.put_env(:symphony_elixir, :default_github_base_url, "https://github.default.internal")
+    mongo_table = :ets.new(:default_login_browser_sessions, [:set, :public])
+    store_opts = [name: store_name, mongo_api: FakeMongoApi, topology: mongo_table, collection: "browser_sessions"]
+
+    start_supervised!({SymphonyElixir.BrowserSessionStore, store_opts})
+
+    Application.put_env(:symphony_elixir, :auth_jira_request_fun, fn req ->
+      send(self(), {:default_auth_jira_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "accountId" => "jira-user-1",
+           "displayName" => "Jira User"
+         }
+       }}
+    end)
+
+    Application.put_env(:symphony_elixir, :auth_github_request_fun, fn req ->
+      send(self(), {:default_auth_github_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "id" => 123,
+           "login" => "octocat"
+         }
+       }}
+    end)
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :DefaultLoginOrchestrator), snapshot_timeout_ms: 50)
+
+    conn =
+      build_conn()
+      |> post("/login", %{
+        "jira_base_url" => "",
+        "github_base_url" => "",
+        "jira_token" => "jira-secret-token",
+        "github_token" => "ghp_secret-token"
+      })
+
+    assert redirected_to(conn) == "/"
+    assert_receive {:default_auth_jira_request, :get, "https://jira.default.internal/rest/api/2/myself"}
+    assert_receive {:default_auth_github_request, :get, "https://github.default.internal/api/v3/user"}
+
+    session_body =
+      conn
+      |> recycle()
+      |> get("/api/v1/session")
+      |> json_response(200)
+
+    assert session_body["profile"]["jira"]["base_url"] == "https://jira.default.internal"
+    assert session_body["profile"]["github"]["base_url"] == "https://github.default.internal"
+  end
+
+  test "login form and token auth use runtime env defaults" do
+    previous_jira_default = System.get_env("SYMPHONY_DEFAULT_JIRA_BASE_URL")
+    previous_github_default = System.get_env("SYMPHONY_DEFAULT_GITHUB_BASE_URL")
+
+    on_exit(fn ->
+      restore_env("SYMPHONY_DEFAULT_JIRA_BASE_URL", previous_jira_default)
+      restore_env("SYMPHONY_DEFAULT_GITHUB_BASE_URL", previous_github_default)
+    end)
+
+    System.put_env("SYMPHONY_DEFAULT_JIRA_BASE_URL", "https://jira.runtime.internal")
+    System.put_env("SYMPHONY_DEFAULT_GITHUB_BASE_URL", "https://github.runtime.internal")
+    Application.delete_env(:symphony_elixir, :default_jira_base_url)
+    Application.delete_env(:symphony_elixir, :default_github_base_url)
+
+    store_name = Module.concat(__MODULE__, RuntimeDefaultLoginBrowserSessionStore)
+    Application.put_env(:symphony_elixir, :browser_session_store, store_name)
+    mongo_table = :ets.new(:runtime_default_login_browser_sessions, [:set, :public])
+    store_opts = [name: store_name, mongo_api: FakeMongoApi, topology: mongo_table, collection: "browser_sessions"]
+
+    start_supervised!({SymphonyElixir.BrowserSessionStore, store_opts})
+
+    Application.put_env(:symphony_elixir, :auth_jira_request_fun, fn req ->
+      send(self(), {:runtime_auth_jira_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "accountId" => "jira-user-1",
+           "displayName" => "Jira User"
+         }
+       }}
+    end)
+
+    Application.put_env(:symphony_elixir, :auth_github_request_fun, fn req ->
+      send(self(), {:runtime_auth_github_request, req.method, URI.to_string(req.url)})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "id" => 123,
+           "login" => "octocat"
+         }
+       }}
+    end)
+
+    start_test_endpoint(orchestrator: Module.concat(__MODULE__, :RuntimeDefaultLoginOrchestrator), snapshot_timeout_ms: 50)
+
+    login_page =
+      build_conn()
+      |> get("/")
+      |> html_response(200)
+
+    assert login_page =~ "https://jira.runtime.internal"
+    assert login_page =~ "https://github.runtime.internal"
+
+    conn =
+      build_conn()
+      |> post("/login", %{
+        "jira_base_url" => "",
+        "github_base_url" => "",
+        "jira_token" => "jira-secret-token",
+        "github_token" => "ghp_secret-token"
+      })
+
+    assert redirected_to(conn) == "/"
+    assert_receive {:runtime_auth_jira_request, :get, "https://jira.runtime.internal/rest/api/2/myself"}
+    assert_receive {:runtime_auth_github_request, :get, "https://github.runtime.internal/api/v3/user"}
+  end
+
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)

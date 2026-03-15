@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Auth do
   """
 
   alias SymphonyElixir.Auth.{GitHubClient, JiraClient}
+  alias SymphonyElixir.RuntimeDefaults
 
   @type login_result :: %{
           user_id: String.t(),
@@ -13,9 +14,9 @@ defmodule SymphonyElixir.Auth do
 
   @spec authenticate(map()) :: {:ok, login_result()} | {:error, term()}
   def authenticate(params) when is_map(params) do
-    with {:ok, jira_base_url} <- required_string(params, ["jira_base_url", :jira_base_url], :missing_jira_base_url),
+    with {:ok, jira_base_url} <- jira_base_url(params),
          {:ok, jira_token} <- required_string(params, ["jira_token", :jira_token], :missing_jira_token),
-         {:ok, github_base_url} <- required_string(params, ["github_base_url", :github_base_url], :missing_github_base_url),
+         {:ok, github_base_url} <- github_base_url(params),
          {:ok, github_token} <- required_string(params, ["github_token", :github_token], :missing_github_token),
          {:ok, jira_identity} <- JiraClient.fetch_identity(jira_base_url, jira_token),
          {:ok, github_identity} <- GitHubClient.fetch_identity(github_base_url, github_token) do
@@ -51,9 +52,12 @@ defmodule SymphonyElixir.Auth do
   end
 
   @spec error_message(term()) :: String.t()
-  def error_message(:missing_jira_base_url), do: "Jira base URL is required."
+  def error_message(:missing_jira_base_url), do: "Jira base URL is required unless the server has a default configured."
   def error_message(:missing_jira_token), do: "Jira token is required."
-  def error_message(:missing_github_base_url), do: "GitHub base URL is required."
+
+  def error_message(:missing_github_base_url),
+    do: "GitHub base URL is required unless the server has a default configured."
+
   def error_message(:missing_github_token), do: "GitHub token is required."
   def error_message(:invalid_jira_base_url), do: "Jira base URL must be a valid http or https URL."
   def error_message(:invalid_github_base_url), do: "GitHub base URL must be a valid GitHub or GitHub Enterprise URL."
@@ -82,6 +86,42 @@ defmodule SymphonyElixir.Auth do
       trimmed -> {:ok, trimmed}
     end
   end
+
+  defp jira_base_url(params) do
+    case optional_string(params, ["jira_base_url", :jira_base_url]) || default_jira_base_url() do
+      value when is_binary(value) -> {:ok, value}
+      _ -> {:error, :missing_jira_base_url}
+    end
+  end
+
+  defp github_base_url(params) do
+    case optional_string(params, ["github_base_url", :github_base_url]) || default_github_base_url() do
+      value when is_binary(value) -> {:ok, value}
+      _ -> {:error, :missing_github_base_url}
+    end
+  end
+
+  defp optional_string(params, keys) do
+    keys
+    |> Enum.find_value(&(params |> Map.get(&1) |> normalize_optional_string()))
+  end
+
+  defp default_jira_base_url do
+    RuntimeDefaults.jira_base_url()
+  end
+
+  defp default_github_base_url do
+    RuntimeDefaults.github_base_url()
+  end
+
+  defp normalize_optional_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_optional_string(_value), do: nil
 
   defp build_user_id(jira_identity, github_identity) do
     jira_key =

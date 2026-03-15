@@ -23,8 +23,9 @@ pods, and an authenticated dashboard._
 - Jira-first tracker support and deployment guidance instead of Linear-first
   local setup.
 - A Phoenix login page at `/` where each operator enters:
-  - Jira base URL + Jira token
-  - GitHub or GitHub Enterprise base URL + GitHub token
+  - Jira token
+  - GitHub token
+  - Optional Jira and GitHub base URLs that fall back to deployment defaults
 - MongoDB-backed user session persistence for remembered Codex sessions and
   operator profile metadata.
 - Kubernetes deployment flow where one orchestrator pod creates one worker pod

@@ -97,8 +97,8 @@ kubectl -n symphony create secret generic symphony-mongo \
 
 Each deployed Symphony instance uses the Jira token you inject here. The token is not baked into the image or chart.
 
-If every user should log into the dashboard against the same Jira server, also set `SYMPHONY_DEFAULT_JIRA_BASE_URL` in the deployment env. That prefills the login form for internal Jira deployments.
-If every user should log into the dashboard against the same GitHub or GitHub Enterprise server, also set `SYMPHONY_DEFAULT_GITHUB_BASE_URL`.
+If every user should log into the dashboard against the same Jira server, also set `SYMPHONY_DEFAULT_JIRA_BASE_URL` in the deployment env. Users can then leave the Jira URL blank at login and Symphony will use that deployment default.
+If every user should log into the dashboard against the same GitHub or GitHub Enterprise server, also set `SYMPHONY_DEFAULT_GITHUB_BASE_URL`. Users can leave the GitHub URL blank and Symphony will use that deployment default.
 
 If you pull from a private registry, create an image pull secret too and reference it from `imagePullSecrets`.
 
@@ -179,8 +179,8 @@ env:
 Notes:
 
 - `tracker.endpoint` should point at your Jira base URL. For Jira Cloud that is typically `https://your-domain.atlassian.net`; for internal Jira it can be something like `https://jira.company.internal`.
-- `SYMPHONY_DEFAULT_JIRA_BASE_URL` pre-populates the browser login form with the Jira base URL users should authenticate against.
-- `SYMPHONY_DEFAULT_GITHUB_BASE_URL` pre-populates the browser login form with the GitHub or GitHub Enterprise base URL users should authenticate against.
+- `SYMPHONY_DEFAULT_JIRA_BASE_URL` becomes the login fallback when a user leaves the Jira base URL blank.
+- `SYMPHONY_DEFAULT_GITHUB_BASE_URL` becomes the login fallback when a user leaves the GitHub base URL blank.
 - Dashboard access requires both a Jira token and a GitHub token per user, and each token can target an internal Jira or GitHub Enterprise server.
 - The orchestrator's tracker polling path is still driven by `tracker.*` plus deployment env like `JIRA_API_TOKEN`; the per-user login credentials are currently used for dashboard identity and remembered session persistence.
 - Worker pods match the issue assignee against the stored Jira identity and, when they find a match, inject that user's `JIRA_BASE_URL`, `JIRA_API_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_SERVER_URL`, and `GITHUB_API_URL`.
@@ -221,10 +221,20 @@ curl http://127.0.0.1:4000/api/v1/session
 When you open `http://127.0.0.1:4000/`, the first page should be the login form.
 In this fork, that is expected behavior. Users must sign in with:
 
-- Jira base URL
 - Jira token
-- GitHub or GitHub Enterprise base URL
 - GitHub token
+- Optional Jira base URL
+- Optional GitHub or GitHub Enterprise base URL
+
+If the optional base URL fields are left blank, Symphony uses `SYMPHONY_DEFAULT_JIRA_BASE_URL` and `SYMPHONY_DEFAULT_GITHUB_BASE_URL`. If no GitHub default is set, Symphony falls back to `https://github.com`.
+
+Example login screen from a live k3s deployment:
+
+![Symphony Kubernetes login page](../../.github/media/symphony-login-k3s.png)
+
+After login, operators see their stored profile, remembered sessions, and active runtime state in the dashboard:
+
+![Symphony dashboard example](../../.github/media/symphony-dashboard-user-guide.png)
 
 Worker pods appear only when the Jira tracker returns an active issue:
 

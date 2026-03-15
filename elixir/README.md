@@ -13,17 +13,24 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 > credentials, persists user session state in MongoDB, and is designed to run
 > well in Kubernetes where each ticket can execute in its own worker pod.
 
-## Screenshot
+## Screenshots
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+Login page with optional Jira and GitHub base URLs:
+
+![Symphony login page](../.github/media/symphony-login-k3s.png)
+
+Authenticated dashboard example with remembered sessions and runtime state:
+
+![Symphony dashboard example](../.github/media/symphony-dashboard-user-guide.png)
 
 ## How it works
 
 1. Polls Jira or another configured tracker for candidate work
 2. Optionally serves a Phoenix dashboard at `/`
 3. Requires each dashboard user to log in with:
-   - Jira base URL + Jira token
-   - GitHub or GitHub Enterprise base URL + GitHub token
+   - Jira token
+   - GitHub token
+   - optional Jira and GitHub base URLs that can fall back to deployment defaults
 4. Persists remembered Codex session metadata and operator profile metadata in
    MongoDB
 5. Creates an isolated workspace per issue
@@ -70,6 +77,7 @@ Current limitation:
 5. If you will use the dashboard login flow, each user also needs:
    - a personal Jira token
    - a personal GitHub or GitHub Enterprise token
+   - optional Jira and GitHub base URLs if they need to override the deployment defaults
 6. If you want the dashboard and session APIs, start Symphony with `--port`.
 7. If you want Kubernetes worker pods, follow the chart guide instead of only
    using the local runtime instructions below.

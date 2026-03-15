@@ -6,6 +6,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
   alias SymphonyElixir.BrowserSessionStore
+  alias SymphonyElixir.RuntimeDefaults
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
@@ -119,7 +120,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div>
               <h2 class="section-title">Token Login</h2>
               <p class="section-copy">
-                Enter both tokens to open the Symphony dashboard. The Jira URL can be prefilled from deployment settings and the verified credentials are stored in MongoDB for this Symphony user profile.
+                Enter both tokens to open the Symphony dashboard. Jira and GitHub base URLs are optional here; if left blank, Symphony uses the deployment defaults. Verified credentials are stored in MongoDB for this Symphony user profile.
               </p>
             </div>
           </div>
@@ -132,10 +133,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <input
                 type="url"
                 name="jira_base_url"
-                value={@default_jira_base_url || ""}
-                placeholder="https://jira.company.internal"
-                required
+                placeholder={@default_jira_base_url || "Blank uses the server default"}
               />
+              <span class="muted">Optional. Blank uses the deployment-level Jira base URL.</span>
             </label>
 
             <label class="detail-stack">
@@ -143,10 +143,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <input
                 type="url"
                 name="github_base_url"
-                value={@default_github_base_url || "https://github.com"}
-                placeholder="https://github.company.internal"
-                required
+                placeholder={@default_github_base_url || "https://github.com"}
               />
+              <span class="muted">Optional. Blank uses the deployment-level GitHub base URL.</span>
             </label>
 
             <label class="detail-stack">
@@ -447,11 +446,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp default_jira_base_url do
-    Application.get_env(:symphony_elixir, :default_jira_base_url)
+    RuntimeDefaults.jira_base_url()
   end
 
   defp default_github_base_url do
-    Application.get_env(:symphony_elixir, :default_github_base_url)
+    RuntimeDefaults.github_base_url()
   end
 
   defp maybe_capture_issue_session(nil, _issue_identifier), do: {:error, :missing_user_id}
